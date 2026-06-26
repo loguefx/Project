@@ -1,0 +1,102 @@
+{
+  "torrent_sources": [
+    {
+      "name": "SceneTime",
+      "enabled": true,
+      "url": "https://www.scenetime.com",
+      "username": "YOUR_USERNAME",
+      "password": "YOUR_PASSWORD",
+      "rss_feed": "https://www.scenetime.com/rss.php?token=YOUR_RSS_TOKEN"
+    },
+    {
+      "name": "Jackett",
+      "type": "jackett",
+      "enabled": true,
+      "url": "http://127.0.0.1:9117",
+      "api_key": "YOUR_JACKETT_API_KEY",
+      "trackers": "all",
+      "exe_path": "C:\\Path\\To\\Jackett\\JackettConsole.exe"
+    }
+  ],
+  "libraries": [
+    {
+      "name": "TV Shows",
+      "type": "tv",
+      "path": "\\\\YOUR_NAS\\Share\\TV Shows",
+      "enabled": true,
+      "auto_discover": true,
+      "watchlist": [
+        "The Bear",
+        "Severance"
+      ]
+    },
+    {
+      "name": "Movies",
+      "type": "movie",
+      "path": "\\\\YOUR_NAS\\Share\\Movies",
+      "enabled": true,
+      "auto_discover": false,
+      "watchlist": [
+        "The Dark Knight (2008)"
+      ]
+    }
+  ],
+  "tmdb": {
+    "api_key": "YOUR_TMDB_API_KEY"
+  },
+  "qbittorrent": {
+    "url": "http://127.0.0.1:8083",
+    "bypass_auth": true,
+    "username": "admin",
+    "password": "YOUR_QBIT_PASSWORD"
+  },
+  "quality": {
+    "resolution": "1080p",
+    "source_retry_sec": 20,
+    "source_wait_max_min": 0,
+    "allowed_resolutions": [
+      "1080p"
+    ],
+    "fallback_resolutions": [
+      "720p"
+    ],
+    "min_seeders": 3,
+    "prefer_seeders": 5,
+    "verify_swarm_health": true,
+    "swarm_check_top_n": 6,
+    "swarm_scrape_timeout_sec": 5,
+    "swarm_max_trackers": 10,
+    "swarm_cache_ttl_sec": 600,
+    "unverified_min_seeders": 6,
+    "queue_unseeded_last_resort": false,
+    "min_size_episode_gb": 0.12,
+    "max_size_episode_gb": 4.0,
+    "min_size_movie_gb": 2.0,
+    "max_size_movie_gb": 20.0,
+    "preferred_audio": ["DTS", "TrueHD", "AC3", "EAC3", "AAC", "DD", "DDP", "Atmos", "FLAC", "AAC2"],
+    "skip_audio_tags": ["SILENT", "NOAUDIO"],
+    "preferred_video": ["x264", "x265", "HEVC", "H264", "H265", "H.264", "H.265", "AVC"],
+    "allowed_sources": ["BluRay", "WEB-DL", "WEBRip", "HDTV", "WEB", "AMZN", "DSNP", "HMAX", "NF", "ATVP"],
+    "require_source_tag": false,
+    "require_video_codec": false,
+    "require_audio_codec": false,
+    "blocked_sources": ["CAM", "TS", "HDCAM", "HDTS", "DVDSCR", "R5"],
+    "trusted_groups": ["NTb", "FLUX", "NTG", "TOMMY", "TEPES", "SKGTV", "MZABI", "SiGMA", "YGP", "EDITH", "BTN", "PLZPROPER"],
+    "require_trusted_group": false,
+    "prefer_proper": true,
+    "skip_reenc": true,
+    "blocked_groups": ["DEFLATE", "DIMENSION", "LOL", "KILLERS", "ROVERS", "SPARKS", "FGT", "CMRG", "EVOLVE", "GHOST"],
+    "deprioritized_groups": ["MeGusta", "YIFY", "YTS", "EVO", "RARBG"],
+    "never_block_groups": ["MeGusta"]
+  },
+  "notifications": {
+    "discord_webhook": "",
+    "ntfy_topic": ""
+  },
+  "schedule_hours": 6,
+  "season_packs_enabled": true,
+  "rss_poll_minutes": 20,
+  "max_in_flight_downloads": 20,
+  "web_public_url": "http://YOUR_SERVER_IP:5000",
+  "excluded_shows": []
+}

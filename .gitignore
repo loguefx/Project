@@ -1,0 +1,71 @@
+# ─────────────────────────────────────────────────────────────
+# SECRETS / per-machine config — NEVER commit these
+# ─────────────────────────────────────────────────────────────
+config.json
+*.secret
+*.env
+.env
+
+# ─────────────────────────────────────────────────────────────
+# Runtime state & locks (per-machine, not source)
+# ─────────────────────────────────────────────────────────────
+state.json
+run.lock
+*.lock
+
+# ─────────────────────────────────────────────────────────────
+# Caches (large, regenerated automatically)
+# ─────────────────────────────────────────────────────────────
+validation_cache.json
+library_cache.json
+tvmaze_cache.json
+*_cache.json
+*.cache
+
+# ─────────────────────────────────────────────────────────────
+# Logs & process output (some are 100+ MB)
+# ─────────────────────────────────────────────────────────────
+*.log
+*.err
+*.out
+*.tmp
+*.json.tmp
+
+# ─────────────────────────────────────────────────────────────
+# Throwaway diagnostic / one-off scripts
+# ─────────────────────────────────────────────────────────────
+_diag*.py
+_check*.py
+_test*.py
+_fix*.py
+_clear*.py
+_purge*.py
+
+# ─────────────────────────────────────────────────────────────
+# Runtime report / scan output artifacts (regenerated, not source)
+# ─────────────────────────────────────────────────────────────
+_audit*.txt
+*_report.txt
+issues_report.txt
+broken_removed_manifest.txt
+*_scan.json
+_retry_keys.json
+
+# ─────────────────────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ─────────────────────────────────────────────────────────────
+# Editors / OS
+# ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
