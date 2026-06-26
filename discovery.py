@@ -15,7 +15,8 @@ import feedparser
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR        = Path(__file__).parent
+from runtime_paths import DATA_DIR
+BASE_DIR        = DATA_DIR
 DISCOVERY_CACHE = BASE_DIR / "discovery_cache.json"
 
 # ---------------------------------------------------------------------------

@@ -155,7 +155,8 @@ _SCAN_WORKERS_SHALLOW: int = 16
 # file whose size/mtime are unchanged is skipped instantly. We also flush the
 # cache to disk every few hundred files, so if the server crashes or is
 # restarted mid-scan, the next run RESUMES instead of starting over.
-_VALIDATION_CACHE_FILE = Path(__file__).resolve().parent / "validation_cache.json"
+from runtime_paths import DATA_DIR as _DATA_DIR
+_VALIDATION_CACHE_FILE = _DATA_DIR / "validation_cache.json"
 # Persist progress often so a crash/restart mid-scan loses almost nothing.
 # Deep scans are slow (a few files/min), so we flush on a TIME interval rather
 # than purely on a file count — whichever comes first.

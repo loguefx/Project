@@ -20,7 +20,15 @@ from urllib.parse import quote
 import requests as req
 from flask import Flask, jsonify, render_template, request
 
-BASE_DIR = Path(__file__).parent
+from runtime_paths import (
+    DATA_DIR, RESOURCE_DIR, EXE_DIR, IS_FROZEN, child_argv,
+)
+from version import __version__ as APP_VERSION
+
+# DATA_DIR holds all writable runtime files; when frozen it lives in a stable,
+# update-proof location so updates never wipe config/state. RESOURCE_DIR holds
+# the bundled Jinja templates (unpacked by PyInstaller when frozen).
+BASE_DIR = DATA_DIR
 STATE_FILE        = BASE_DIR / "state.json"
 CONFIG_FILE       = BASE_DIR / "config.json"
 LOG_FILE          = BASE_DIR / "downloader.log"
@@ -33,7 +41,7 @@ LIBRARY_CACHE_TTL = 3600  # 1 hour before background refresh kicks in
 # Scan progress state shared between threads
 _scan_progress: dict = {"running": False, "pct": 0, "label": "", "started_at": None}
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=str(RESOURCE_DIR / "templates"))
 logger = logging.getLogger("web")
 log = logging.getLogger("web")
 
@@ -1530,7 +1538,7 @@ def api_discover_download():
 
     # Trigger downloader subprocess
     python = sys.executable
-    cmd    = [python, str(BASE_DIR / "downloader.py"), "--run-now"]
+    cmd    = child_argv("--run-now")
     try:
         subprocess.Popen(cmd, cwd=str(BASE_DIR))
         return jsonify({"ok": True, "message": f"Added '{name}' to watchlist and triggered downloader"})
@@ -1633,7 +1641,7 @@ def api_run():
             }), 409
     dry = body.get("dry_run", False)
     python = sys.executable
-    cmd = [python, str(BASE_DIR / "downloader.py"), "--run-now"]
+    cmd = child_argv("--run-now")
     if dry:
         cmd.append("--dry-run")
     else:
@@ -2099,7 +2107,7 @@ def api_validate_paths():
 
     try:
         import os
-        cmd = [sys.executable, str(BASE_DIR / "downloader.py"), "--validate-paths", *paths]
+        cmd = child_argv("--validate-paths", *paths)
         kwargs: dict = {"cwd": str(BASE_DIR)}
         if os.name == "nt":
             kwargs["creationflags"] = 0x00000008  # DETACHED_PROCESS
@@ -2369,7 +2377,7 @@ def api_remove_broken():
         if not campaign and result.get("requeued", 0) > 0:
             try:
                 python = sys.executable
-                cmd = [python, str(BASE_DIR / "downloader.py"), "--run-now"]
+                cmd = child_argv("--run-now")
                 subprocess.Popen(cmd, cwd=str(BASE_DIR))
                 triggered = True
             except Exception as exc:
@@ -2502,7 +2510,7 @@ def review_redownload():
     if not campaign and requeued > 0:
         try:
             subprocess.Popen(
-                [sys.executable, str(BASE_DIR / "downloader.py"), "--run-now"],
+                child_argv("--run-now"),
                 cwd=str(BASE_DIR),
             )
         except Exception as exc:
@@ -3008,7 +3016,7 @@ def _completion_watcher() -> None:
                         import subprocess as _sp
                         try:
                             _sp.Popen(
-                                [sys.executable, str(BASE_DIR / "downloader.py"), "--run-now"],
+                                child_argv("--run-now"),
                                 cwd=str(BASE_DIR),
                             )
                             _last_requeue_run_ts = now_ts
@@ -3064,7 +3072,7 @@ def _auto_scheduler() -> None:
                     logger.info("[Scheduler] RSS poll — checking for new episodes")
                     try:
                         _sp.Popen(
-                            [sys.executable, str(BASE_DIR / "downloader.py"), "--rss-grab"],
+                            child_argv("--rss-grab"),
                             cwd=str(BASE_DIR),
                         )
                     except Exception as exc:
@@ -3085,7 +3093,7 @@ def _auto_scheduler() -> None:
             if due and (now - _last_triggered) > 300 and not active_run_status():  # debounce 5 min
                 logger.info("[Scheduler] Run is overdue — triggering downloader")
                 python = sys.executable
-                cmd    = [python, str(BASE_DIR / "downloader.py"), "--run-now"]
+                cmd    = child_argv("--run-now")
                 try:
                     _sp.Popen(cmd, cwd=str(BASE_DIR))
                     _last_triggered = now
@@ -3109,11 +3117,93 @@ def start_auto_scheduler() -> None:
 
 
 # ---------------------------------------------------------------------------
-# In-app updater — pull new versions from GitHub and restart, from the web UI
+# In-app updater
+#
+# Two modes:
+#   * FROZEN (the shipped .exe): updates come from GitHub *Releases*. The running
+#     service downloads the new build .zip (with live progress), then a detached
+#     helper stops the service, swaps the app folder, and restarts it. Writable
+#     data (config.json/state.json/caches) live in DATA_DIR (%ProgramData%) and
+#     are never touched.
+#   * SOURCE (python web.py): updates come from `git pull`, as before.
 # ---------------------------------------------------------------------------
 
+GITHUB_OWNER = "loguefx"
+GITHUB_REPO  = "Project"
+# Service name used by the updater helper (kept in sync with service.py).
+SERVICE_NAME_FOR_UPDATER = "ShowTVDownloader"
+
+# Shared progress state for the web UI's progress bar.
+_update_lock = threading.Lock()
+_update_state: dict = {
+    "active": False, "phase": "idle", "pct": 0,
+    "downloaded": 0, "total": 0, "message": "", "error": "",
+    "from_version": "", "to_version": "", "done": False,
+}
+
+
+def _set_update_state(**kw) -> None:
+    with _update_lock:
+        _update_state.update(kw)
+        dl, tot = _update_state["downloaded"], _update_state["total"]
+        if _update_state["phase"] == "downloading" and tot > 0:
+            _update_state["pct"] = int(dl * 100 / tot)
+
+
+def _get_update_state() -> dict:
+    with _update_lock:
+        return dict(_update_state)
+
+
+# ---- version helpers ------------------------------------------------------
+
+def _parse_version(s: str) -> tuple:
+    s = (s or "").strip().lstrip("vV")
+    nums: list = []
+    for part in re.split(r"[._\-+]", s):
+        if part.isdigit():
+            nums.append(int(part))
+        else:
+            break
+    return tuple(nums) if nums else (0,)
+
+
+def _gh_token() -> str:
+    try:
+        cfg = load_config()
+        tok = (cfg.get("update", {}) or {}).get("github_token")
+        if tok:
+            return str(tok)
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return os.environ.get("GITHUB_TOKEN", "")
+
+
+def _gh_headers(accept: str = "application/vnd.github+json") -> dict:
+    h = {"Accept": accept, "User-Agent": "ShowTVDownloader-Updater"}
+    tok = _gh_token()
+    if tok:
+        h["Authorization"] = f"Bearer {tok}"
+    return h
+
+
+def _release_latest() -> dict:
+    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+    r = req.get(url, headers=_gh_headers(), timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def _pick_zip_asset(release: dict) -> Optional[dict]:
+    for a in release.get("assets", []) or []:
+        if str(a.get("name", "")).lower().endswith(".zip"):
+            return a
+    return None
+
+
+# ---- git mode (source checkouts) ------------------------------------------
+
 def _git(*args, timeout: int = 60):
-    """Run a git command in the project dir. Returns (rc, stdout, stderr)."""
     try:
         p = subprocess.run(
             ["git", *args], cwd=str(BASE_DIR),
@@ -3143,11 +3233,9 @@ def _has_remote() -> bool:
 
 
 def _schedule_self_restart(delay_sec: int = 4) -> bool:
-    """Spawn a detached relauncher, then exit so the fresh server can bind the
-    port. The relauncher waits `delay_sec`, then starts `python web.py` exactly
-    the way this process was started (0.0.0.0:5000, hidden, logs captured)."""
+    """SOURCE mode only: relaunch `python web.py` after a short delay."""
     py     = sys.executable
-    script = str(BASE_DIR / "web.py")
+    script = str(Path(RESOURCE_DIR) / "web.py")
     ps_cmd = (
         f"Start-Sleep -Seconds {delay_sec}; "
         f"Start-Process -FilePath \"{py}\" -ArgumentList '-u',\"{script}\" "
@@ -3166,91 +3254,280 @@ def _schedule_self_restart(delay_sec: int = 4) -> bool:
     except Exception as exc:  # pylint: disable=broad-except
         logger.error("[Update] Could not spawn restarter: %s", exc)
         return False
-    # Let Flask flush the HTTP response first, then hard-exit to free the port.
     threading.Timer(2.0, lambda: os._exit(0)).start()
     logger.info("[Update] Restart scheduled — server will relaunch in ~%ds.", delay_sec)
     return True
 
 
-@app.get("/api/update/check")
-def api_update_check():
-    """Fetch from GitHub and report whether a newer version is available."""
+def _git_check() -> dict:
     if not _git_repo_present():
-        return jsonify({"ok": False,
-                        "error": "This install isn't a git checkout, so it can't self-update. "
-                                 "Re-install by cloning the GitHub repo to enable one-click updates."})
+        return {"ok": False, "error": "This install isn't a git checkout and isn't a packaged "
+                                      "build, so it can't self-update."}
     if not _has_remote():
-        return jsonify({"ok": False,
-                        "error": "No GitHub remote is configured for this checkout."})
+        return {"ok": False, "error": "No GitHub remote is configured for this checkout."}
     branch = _current_branch()
     rc, _, err = _git("fetch", "origin", branch, timeout=120)
     if rc != 0:
-        return jsonify({"ok": False, "error": f"Couldn't reach GitHub (git fetch): {err or 'unknown error'}"})
-
-    _, local_sha, _  = _git("rev-parse", "HEAD")
-    _, remote_sha, _ = _git("rev-parse", f"origin/{branch}")
+        return {"ok": False, "error": f"Couldn't reach GitHub (git fetch): {err or 'unknown error'}"}
     _, behind_str, _ = _git("rev-list", "--count", f"HEAD..origin/{branch}")
     try:
         behind = int(behind_str or "0")
     except ValueError:
         behind = 0
     _, status_out, _ = _git("status", "--porcelain")
-    dirty = bool(status_out.strip())
     _, cur_desc, _ = _git("log", "-1", "--pretty=%h %s (%cr)")
-
     changelog: list = []
     if behind:
         _, log_out, _ = _git("log", "--pretty=%h %s", f"HEAD..origin/{branch}")
         changelog = [ln for ln in log_out.splitlines() if ln.strip()][:50]
-
-    return jsonify({
-        "ok":               True,
-        "branch":           branch,
-        "update_available": behind > 0,
-        "behind_by":        behind,
-        "current":          cur_desc,
-        "local_sha":        local_sha[:8],
-        "remote_sha":       remote_sha[:8],
-        "dirty":            dirty,
-        "changelog":        changelog,
-    })
+    return {
+        "ok": True, "mode": "git", "branch": branch,
+        "update_available": behind > 0, "behind_by": behind,
+        "current": cur_desc, "current_version": APP_VERSION,
+        "dirty": bool(status_out.strip()), "notes": "\n".join(changelog),
+    }
 
 
-@app.post("/api/update/apply")
-def api_update_apply():
-    """Pull the latest version from GitHub (fast-forward) and restart the server.
-    Untracked files (config.json, state.json, caches) are never touched."""
-    if not _git_repo_present():
-        return jsonify({"ok": False, "error": "Not a git checkout — can't self-update."})
-    if not _has_remote():
-        return jsonify({"ok": False, "error": "No GitHub remote is configured."})
-    body  = request.get_json(silent=True) or {}
-    force = bool(body.get("force"))
+def _git_apply(force: bool) -> dict:
     branch = _current_branch()
-
     _git("fetch", "origin", branch, timeout=120)
     _, status_out, _ = _git("status", "--porcelain")
     if status_out.strip() and not force:
-        return jsonify({
-            "ok": False, "dirty": True,
-            "error": "This machine has local edits to tracked files. Updating would discard them. "
-                     "Use Force update to overwrite with the GitHub version (your config and "
-                     "downloaded data are safe — they're not tracked).",
-        })
-
+        return {"ok": False, "dirty": True,
+                "error": "This machine has local edits to tracked files. Use Force update to "
+                         "overwrite with the GitHub version (config/data are safe — untracked)."}
     if force:
         rc, out, err = _git("reset", "--hard", f"origin/{branch}", timeout=180)
     else:
         rc, out, err = _git("pull", "--ff-only", "origin", branch, timeout=180)
     if rc != 0:
-        return jsonify({"ok": False, "error": f"Update failed: {err or out or 'unknown error'}"})
+        return {"ok": False, "error": f"Update failed: {err or out or 'unknown error'}"}
+    _schedule_self_restart()
+    return {"ok": True, "mode": "git", "restarting": True}
 
-    _, new_desc, _ = _git("log", "-1", "--pretty=%h %s")
-    restarting = _schedule_self_restart()
-    return jsonify({"ok": True, "updated_to": new_desc, "restarting": restarting})
+
+# ---- release mode (frozen .exe) -------------------------------------------
+
+def _release_check() -> dict:
+    try:
+        rel = _release_latest()
+    except req.HTTPError as exc:  # pylint: disable=broad-except
+        code = getattr(exc.response, "status_code", 0)
+        if code in (401, 403, 404):
+            return {"ok": False, "error": (
+                "Couldn't read GitHub Releases. If the repo is private, add a GitHub token "
+                "to config.json under \"update\": {\"github_token\": \"...\"} (needs 'repo' "
+                "read access), or make the repo public.")}
+        return {"ok": False, "error": f"GitHub error: {exc}"}
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"ok": False, "error": f"Couldn't reach GitHub: {exc}"}
+
+    latest = str(rel.get("tag_name") or rel.get("name") or "")
+    asset = _pick_zip_asset(rel)
+    available = _parse_version(latest) > _parse_version(APP_VERSION)
+    return {
+        "ok": True, "mode": "release",
+        "current_version": APP_VERSION,
+        "latest_version": latest.lstrip("vV"),
+        "update_available": bool(available and asset),
+        "notes": rel.get("body") or "",
+        "published_at": rel.get("published_at") or "",
+        "asset_name": (asset or {}).get("name", ""),
+        "asset_size": (asset or {}).get("size", 0),
+        "no_asset": asset is None,
+    }
+
+
+def _download_asset(asset: dict, dest: Path) -> None:
+    """Stream a release asset to `dest`, updating progress state as it goes.
+    Works for private repos (API asset URL + octet-stream) and public ones."""
+    total = int(asset.get("size") or 0)
+    _set_update_state(phase="downloading", downloaded=0, total=total, message="Downloading update…")
+    # For private repos we must hit the API asset endpoint with octet-stream.
+    if _gh_token() and asset.get("url"):
+        url, headers = asset["url"], _gh_headers("application/octet-stream")
+    else:
+        url, headers = asset.get("browser_download_url"), _gh_headers("application/octet-stream")
+    with req.get(url, headers=headers, stream=True, timeout=120, allow_redirects=True) as r:
+        r.raise_for_status()
+        if not total:
+            total = int(r.headers.get("Content-Length") or 0)
+            _set_update_state(total=total)
+        done = 0
+        with open(dest, "wb") as fh:
+            for chunk in r.iter_content(chunk_size=1024 * 256):
+                if chunk:
+                    fh.write(chunk)
+                    done += len(chunk)
+                    _set_update_state(downloaded=done)
+
+
+def _write_apply_helper(staging_app: Path, update_dir: Path) -> Path:
+    """Write a detached PowerShell helper that stops the service, mirrors the new
+    app files over the install dir, then restarts the service."""
+    install_dir = str(EXE_DIR)
+    log_path = str(update_dir / "apply_update.log")
+    ps = f"""
+$ErrorActionPreference = 'Continue'
+$svc = '{SERVICE_NAME_FOR_UPDATER}'
+$src = '{str(staging_app)}'
+$dst = '{install_dir}'
+Start-Transcript -Path '{log_path}' -Force | Out-Null
+Write-Output "Stopping $svc..."
+sc.exe stop $svc | Out-Null
+for ($i = 0; $i -lt 60; $i++) {{
+    $s = (Get-Service -Name $svc -ErrorAction SilentlyContinue)
+    if ($null -eq $s -or $s.Status -eq 'Stopped') {{ break }}
+    Start-Sleep -Seconds 1
+}}
+Start-Sleep -Seconds 2
+Write-Output "Mirroring new build into $dst..."
+robocopy $src $dst /MIR /R:3 /W:2 /NFL /NDL /NJH /NJS | Out-Null
+Write-Output "Starting $svc..."
+sc.exe start $svc | Out-Null
+Start-Sleep -Seconds 2
+Remove-Item -LiteralPath $src -Recurse -Force -ErrorAction SilentlyContinue
+Stop-Transcript | Out-Null
+""".strip()
+    helper = update_dir / "apply_update.ps1"
+    helper.write_text(ps, encoding="utf-8")
+    return helper
+
+
+def _spawn_apply_helper(helper: Path) -> None:
+    subprocess.Popen(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-WindowStyle", "Hidden", "-File", str(helper)],
+        creationflags=(getattr(subprocess, "DETACHED_PROCESS", 0)
+                       | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+        close_fds=True,
+    )
+
+
+def _run_release_update(force: bool = False) -> None:
+    """Background worker: download + stage + hand off to the swap/restart helper."""
+    import shutil
+    import zipfile
+    try:
+        rel = _release_latest()
+        latest = str(rel.get("tag_name") or rel.get("name") or "")
+        asset = _pick_zip_asset(rel)
+        if not asset:
+            _set_update_state(active=False, phase="error",
+                              error="The latest release has no .zip build asset to download.")
+            return
+        _set_update_state(active=True, phase="downloading", done=False, error="",
+                          from_version=APP_VERSION, to_version=latest.lstrip("vV"))
+
+        update_dir = DATA_DIR / "_update"
+        if update_dir.exists():
+            shutil.rmtree(update_dir, ignore_errors=True)
+        update_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = update_dir / "build.zip"
+        _download_asset(asset, zip_path)
+
+        _set_update_state(phase="extracting", pct=100, message="Extracting…")
+        staging = update_dir / "staging"
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(staging)
+        zip_path.unlink(missing_ok=True)
+
+        # The build dir is whichever folder (or staging itself) holds the exe.
+        exe_name = Path(sys.executable).name
+        app_src = None
+        for cand in [staging, *[p for p in staging.rglob("*") if p.is_dir()]]:
+            if (cand / exe_name).exists():
+                app_src = cand
+                break
+        if app_src is None:
+            _set_update_state(active=False, phase="error",
+                              error=f"Downloaded build didn't contain {exe_name}.")
+            return
+
+        _set_update_state(phase="installing", message="Installing… the service will restart.")
+        helper = _write_apply_helper(app_src, update_dir)
+        _spawn_apply_helper(helper)
+        _set_update_state(phase="restarting", done=True,
+                          message="Update downloaded. Restarting service…")
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception("[Update] release update failed")
+        _set_update_state(active=False, phase="error", error=str(exc))
+
+
+# ---- routes ---------------------------------------------------------------
+
+@app.get("/api/update/check")
+def api_update_check():
+    if IS_FROZEN:
+        return jsonify(_release_check())
+    return jsonify(_git_check())
+
+
+@app.post("/api/update/apply")
+def api_update_apply():
+    body = request.get_json(silent=True) or {}
+    force = bool(body.get("force"))
+    if IS_FROZEN:
+        st = _get_update_state()
+        if st["active"] and not st["done"] and st["phase"] not in ("error",):
+            return jsonify({"ok": True, "mode": "release", "started": True,
+                            "message": "Update already in progress."})
+        _set_update_state(active=True, phase="starting", pct=0, downloaded=0, total=0,
+                          done=False, error="", message="Starting update…")
+        threading.Thread(target=_run_release_update, kwargs={"force": force},
+                         daemon=True, name="ReleaseUpdate").start()
+        return jsonify({"ok": True, "mode": "release", "started": True})
+    return jsonify(_git_apply(force))
+
+
+@app.get("/api/update/progress")
+def api_update_progress():
+    return jsonify(_get_update_state())
 
 
 # ---------------------------------------------------------------------------
+# Shared startup — used by both `python web.py` and the Windows service wrapper
+# ---------------------------------------------------------------------------
+
+def _clear_stale_running_status() -> None:
+    """Clear any stale "running" scan status left over from a prior process."""
+    if not STATE_FILE.exists():
+        return
+    try:
+        with open(STATE_FILE, encoding="utf-8") as _sf:
+            _st = json.load(_sf)
+        if _st.get("scan_status", {}).get("status") == "running":
+            _st["scan_status"]["status"] = "idle"
+            _st["scan_status"]["detail"] = ""
+            with open(STATE_FILE, "w", encoding="utf-8") as _sf:
+                json.dump(_st, _sf, indent=2)
+    except (json.JSONDecodeError, OSError, KeyError):
+        pass
+
+
+def bootstrap() -> None:
+    """Idempotent startup work shared by the CLI and the service: clear stale
+    status, log config warnings, and start the background watcher + scheduler."""
+    _clear_stale_running_status()
+    try:
+        from downloader import validate_config
+        for _w in validate_config(load_config()):
+            logging.getLogger("web").warning("[Config] %s", _w)
+    except Exception as _cfg_exc:  # pylint: disable=broad-except
+        logging.getLogger("web").debug("[Config] validation skipped: %s", _cfg_exc)
+    start_completion_watcher()
+    start_auto_scheduler()
+
+
+def run_foreground(host: str = "0.0.0.0", port: int = 5000, debug: bool = False) -> None:
+    """Run the dev/CLI server in the foreground (blocking)."""
+    bootstrap()
+    # use_reloader=False is REQUIRED: the reloader spawns a worker child, and on
+    # restart the parent's death orphans that worker — each orphan keeps its own
+    # scheduler + CompletionWatcher alive, which (historically) piled up into many
+    # overlapping downloader runs. One process, one scheduler, one watcher.
+    app.run(host=host, port=port, debug=debug, use_reloader=False, threaded=True)
+
 
 if __name__ == "__main__":
     import argparse
@@ -3262,33 +3539,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-    # Clear any stale "running" status left over from a previous server process
-    if STATE_FILE.exists():
-        try:
-            with open(STATE_FILE, encoding="utf-8") as _sf:
-                _st = json.load(_sf)
-            if _st.get("scan_status", {}).get("status") == "running":
-                _st["scan_status"]["status"] = "idle"
-                _st["scan_status"]["detail"] = ""
-                with open(STATE_FILE, "w", encoding="utf-8") as _sf:
-                    json.dump(_st, _sf, indent=2)
-        except (json.JSONDecodeError, OSError, KeyError):
-            pass
-
-    # Surface config sanity-check warnings at startup.
-    try:
-        from downloader import validate_config
-        for _w in validate_config(load_config()):
-            logging.getLogger("web").warning("[Config] %s", _w)
-    except Exception as _cfg_exc:
-        logging.getLogger("web").debug("[Config] validation skipped: %s", _cfg_exc)
-
-    start_completion_watcher()
-    start_auto_scheduler()
-    # use_reloader=False is REQUIRED: the reloader spawns a worker child, and on
-    # restart the parent's death orphans that worker — each orphan keeps its own
-    # scheduler + CompletionWatcher alive, which (historically) piled up into many
-    # overlapping downloader runs. One process, one scheduler, one watcher.
-    app.run(host=args.host, port=args.port, debug=args.debug,
-            use_reloader=False, threaded=True)
+    run_foreground(host=args.host, port=args.port, debug=args.debug)

@@ -1,0 +1,4 @@
+# Build-only dependencies (not needed at runtime when running from source).
+# Install with:  pip install -r requirements-build.txt
+pyinstaller>=6.3.0
+pywin32>=306

@@ -17,6 +17,7 @@ from typing import Optional
 
 import schedule
 
+from runtime_paths import DATA_DIR, child_argv
 from notifier import Notifier
 from qbit_client import QBitClient
 from scanner import (
@@ -41,7 +42,7 @@ from tvmaze_client import TVMazeClient
 # Logging
 # ---------------------------------------------------------------------------
 
-LOG_FILE = Path(__file__).parent / "downloader.log"
+LOG_FILE = DATA_DIR / "downloader.log"
 def _make_stream_handler() -> logging.StreamHandler:
     h = logging.StreamHandler(sys.stdout)
     # Force UTF-8 on Windows consoles that default to cp1252
@@ -70,8 +71,8 @@ logger = logging.getLogger("downloader")
 # State helpers
 # ---------------------------------------------------------------------------
 
-STATE_FILE = Path(__file__).parent / "state.json"
-RUN_LOCK_FILE = Path(__file__).parent / "run.lock"
+STATE_FILE = DATA_DIR / "state.json"
+RUN_LOCK_FILE = DATA_DIR / "run.lock"
 # A run-lock older than this (no live owner) is considered abandoned.
 RUN_LOCK_STALE_MINUTES = 30
 
@@ -292,7 +293,7 @@ def ensure_jackett_up(config: dict, restart: bool = True, wait_s: int = 45) -> b
         if os.name == "nt":
             flags = getattr(subprocess, "DETACHED_PROCESS", 0) | \
                     getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        log_path = Path(__file__).parent / "jackett_console.log"
+        log_path = DATA_DIR / "jackett_console.log"
         with open(log_path, "ab") as lf:
             subprocess.Popen(
                 [exe], stdout=lf, stderr=lf, stdin=subprocess.DEVNULL,
@@ -418,7 +419,7 @@ def save_library_snapshot(state: dict, snapshot: dict) -> None:
 # Config loader
 # ---------------------------------------------------------------------------
 
-CONFIG_FILE = Path(__file__).parent / "config.json"
+CONFIG_FILE = DATA_DIR / "config.json"
 
 
 def load_config() -> dict:
@@ -1877,7 +1878,7 @@ class Downloader:
             # Single-instance guard: if a watcher wrote a heartbeat in the last
             # 90s it's still alive — don't spawn a second one that would fight it
             # over the same torrents/files.
-            hb = Path(__file__).parent / "watcher.heartbeat"
+            hb = DATA_DIR / "watcher.heartbeat"
             try:
                 if hb.exists() and (time.time() - hb.stat().st_mtime) < 90:
                     logger.info("[Watcher] Already running (recent heartbeat) — not spawning another.")
@@ -1885,15 +1886,15 @@ class Downloader:
                     return
             except Exception:
                 pass
-            cmd = [sys.executable, str(Path(__file__).resolve()), "--watch-downloads"]
+            cmd = child_argv("--watch-downloads")
             # A DETACHED_PROCESS has NO console, so sys.stdout/stderr are None —
             # which breaks the logging StreamHandler setup at import time and
             # silently kills the watcher. Redirect both to a logfile so the
             # process has valid handles AND we can inspect what it did.
-            log_path = Path(__file__).parent / "watcher.log"
+            log_path = DATA_DIR / "watcher.log"
             log_fh = open(log_path, "a", encoding="utf-8", errors="replace")
             kwargs: dict = {
-                "cwd": str(Path(__file__).parent),
+                "cwd": str(DATA_DIR),
                 "stdout": log_fh,
                 "stderr": subprocess.STDOUT,
                 "stdin": subprocess.DEVNULL,
@@ -1994,8 +1995,8 @@ class Downloader:
 
         # Heartbeat file — lets a concurrent run detect this watcher is alive and
         # avoid spawning a duplicate that would fight us over the same torrents.
-        HB_FILE = Path(__file__).parent / "watcher.heartbeat"
-        LOCK_FILE = Path(__file__).parent / "watcher.lock"
+        HB_FILE = DATA_DIR / "watcher.heartbeat"
+        LOCK_FILE = DATA_DIR / "watcher.lock"
         def _beat() -> None:
             try:
                 HB_FILE.write_text(str(time.time()))

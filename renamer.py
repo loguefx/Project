@@ -68,7 +68,8 @@ def _get_episode_title(show_name: str, season: int, episode: int) -> str:
     Returns empty string if not found.
     """
     try:
-        cache_path = Path(__file__).parent / "tvmaze_cache.json"
+        from runtime_paths import DATA_DIR
+        cache_path = DATA_DIR / "tvmaze_cache.json"
         if not cache_path.exists():
             return ""
         import json

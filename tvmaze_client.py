@@ -20,7 +20,8 @@ TVMAZE_BASE = "https://api.tvmaze.com"
 _MEM_TTL    = 3600       # in-process cache: 1 hour
 _DISK_TTL   = 86400 * 3  # disk cache: 3 days for show/episode data
 
-_DISK_CACHE_FILE = Path(__file__).parent / "tvmaze_cache.json"
+from runtime_paths import DATA_DIR as _DATA_DIR
+_DISK_CACHE_FILE = _DATA_DIR / "tvmaze_cache.json"
 
 
 def _load_disk_cache() -> dict:
