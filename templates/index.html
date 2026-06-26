@@ -1716,6 +1716,26 @@
         <span class="section-title">Settings</span>
       </div>
 
+      <!-- Software update card -->
+      <div class="settings-card" id="settings-update">
+        <div class="settings-card-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+          Software Updates
+          <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Pull the latest version from GitHub and restart — no reinstall needed</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
+          Current version: <span id="update-current-ver" style="color:var(--text);font-family:ui-monospace,'Cascadia Code','Consolas',monospace">click “Check for Updates”</span>
+        </div>
+        <div id="update-result" class="hidden" style="margin-bottom:10px;padding:10px 12px;border-radius:8px;font-size:13px"></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-ghost" id="btn-check-update" onclick="checkUpdate()">Check for Updates</button>
+          <button class="btn btn-primary hidden" id="btn-apply-update" onclick="applyUpdate(false)">Update &amp; Restart</button>
+          <button class="btn btn-ghost hidden" id="btn-force-update" onclick="applyUpdate(true)" style="color:#ff9090;border-color:rgba(255,86,86,.4)" title="Overwrite local code edits with the GitHub version (config &amp; data are safe)">Force Update</button>
+          <span id="update-msg" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+        <div id="update-changelog" class="hidden" style="margin-top:12px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:ui-monospace,'Cascadia Code','Consolas',monospace;max-height:220px;overflow:auto;white-space:pre-wrap"></div>
+      </div>
+
       <!-- Library paths card -->
       <div class="settings-card" id="settings-libraries">
         <div class="settings-card-title">
@@ -2840,6 +2860,108 @@ function _renderNotifications() {
   // Don't pre-fill placeholder values
   document.getElementById('notif-discord').value = wh.includes('your_webhook') ? '' : wh;
   document.getElementById('notif-ntfy').value    = nt.includes('your_ntfy')    ? '' : nt;
+}
+
+// ── Software updates (pull from GitHub + restart) ──────────────────────────
+async function checkUpdate() {
+  const btn = document.getElementById('btn-check-update');
+  const result = document.getElementById('update-result');
+  const apply = document.getElementById('btn-apply-update');
+  const force = document.getElementById('btn-force-update');
+  const changelog = document.getElementById('update-changelog');
+  apply.classList.add('hidden'); force.classList.add('hidden'); changelog.classList.add('hidden');
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'Checking…';
+  try {
+    const r = await fetch('/api/update/check');
+    const d = await r.json();
+    result.classList.remove('hidden');
+    if (!d.ok) {
+      result.style.background = 'rgba(255,86,86,.12)';
+      result.style.color = '#ff9090';
+      result.textContent = d.error || 'Update check failed.';
+      return;
+    }
+    document.getElementById('update-current-ver').textContent = d.current || d.local_sha;
+    if (d.update_available) {
+      result.style.background = 'rgba(254,231,92,.12)';
+      result.style.color = '#fee75c';
+      result.textContent = `Update available — you are ${d.behind_by} commit(s) behind (${d.local_sha} → ${d.remote_sha}).`;
+      apply.classList.remove('hidden');
+      if (d.changelog && d.changelog.length) {
+        changelog.textContent = 'What\'s new:\n' + d.changelog.join('\n');
+        changelog.classList.remove('hidden');
+      }
+    } else {
+      result.style.background = 'rgba(34,197,94,.12)';
+      result.style.color = 'var(--green)';
+      result.textContent = '✓ You\'re on the latest version.';
+    }
+    if (d.dirty) {
+      force.classList.remove('hidden');
+      const note = document.getElementById('update-msg');
+      note.textContent = 'This machine has local code edits — use Force Update to overwrite them.';
+    }
+  } catch (e) {
+    result.classList.remove('hidden');
+    result.style.background = 'rgba(255,86,86,.12)';
+    result.style.color = '#ff9090';
+    result.textContent = 'Update check failed: ' + e;
+  } finally {
+    btn.disabled = false; btn.textContent = old;
+  }
+}
+
+async function applyUpdate(force) {
+  const label = force ? 'Force updating' : 'Updating';
+  if (force && !confirm('Force update will overwrite any local code changes on THIS machine with the GitHub version. Your config and downloaded data are safe. Continue?')) return;
+  const msg = document.getElementById('update-msg');
+  ['btn-check-update','btn-apply-update','btn-force-update'].forEach(id => document.getElementById(id).disabled = true);
+  msg.style.color = 'var(--muted)';
+  msg.textContent = label + '…';
+  try {
+    const r = await fetch('/api/update/apply', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ force: !!force }),
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      msg.style.color = '#ff9090';
+      msg.textContent = d.error || 'Update failed.';
+      if (d.dirty) document.getElementById('btn-force-update').classList.remove('hidden');
+      ['btn-check-update','btn-apply-update','btn-force-update'].forEach(id => document.getElementById(id).disabled = false);
+      return;
+    }
+    showToast('Updated to ' + (d.updated_to || 'latest') + ' — restarting…', 'success');
+    msg.style.color = 'var(--green)';
+    msg.textContent = 'Updated! Restarting the server…';
+    waitForServerBack();
+  } catch (e) {
+    msg.style.color = '#ff9090';
+    msg.textContent = 'Update request failed: ' + e;
+    ['btn-check-update','btn-apply-update','btn-force-update'].forEach(id => document.getElementById(id).disabled = false);
+  }
+}
+
+async function waitForServerBack() {
+  const msg = document.getElementById('update-msg');
+  let tries = 0;
+  const poll = setInterval(async () => {
+    tries++;
+    try {
+      const r = await fetch('/api/update/check', { cache: 'no-store' });
+      if (r.ok) {
+        clearInterval(poll);
+        msg.style.color = 'var(--green)';
+        msg.textContent = '✓ Server is back on the new version. Reloading…';
+        setTimeout(() => location.reload(), 1500);
+      }
+    } catch (e) { /* still restarting */ }
+    if (tries > 40) { // ~80s
+      clearInterval(poll);
+      msg.style.color = '#fee75c';
+      msg.textContent = 'Server is taking a while to come back — try reloading the page manually.';
+    }
+  }, 2000);
 }
 
 async function saveNotifications() {

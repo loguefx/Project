@@ -6,6 +6,7 @@ Run with: python web.py  (defaults to http://localhost:5000)
 
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -3105,6 +3106,148 @@ def start_auto_scheduler() -> None:
         t = threading.Thread(target=_auto_scheduler, daemon=True, name="AutoScheduler")
         t.start()
         _scheduler_started = True
+
+
+# ---------------------------------------------------------------------------
+# In-app updater — pull new versions from GitHub and restart, from the web UI
+# ---------------------------------------------------------------------------
+
+def _git(*args, timeout: int = 60):
+    """Run a git command in the project dir. Returns (rc, stdout, stderr)."""
+    try:
+        p = subprocess.run(
+            ["git", *args], cwd=str(BASE_DIR),
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+    except FileNotFoundError:
+        return 127, "", "git is not installed on this machine"
+    except subprocess.TimeoutExpired:
+        return 124, "", "git command timed out"
+    except Exception as exc:  # pylint: disable=broad-except
+        return 1, "", str(exc)
+
+
+def _git_repo_present() -> bool:
+    return (BASE_DIR / ".git").exists()
+
+
+def _current_branch() -> str:
+    rc, out, _ = _git("rev-parse", "--abbrev-ref", "HEAD")
+    return out if rc == 0 and out else "main"
+
+
+def _has_remote() -> bool:
+    rc, out, _ = _git("remote")
+    return rc == 0 and bool(out.strip())
+
+
+def _schedule_self_restart(delay_sec: int = 4) -> bool:
+    """Spawn a detached relauncher, then exit so the fresh server can bind the
+    port. The relauncher waits `delay_sec`, then starts `python web.py` exactly
+    the way this process was started (0.0.0.0:5000, hidden, logs captured)."""
+    py     = sys.executable
+    script = str(BASE_DIR / "web.py")
+    ps_cmd = (
+        f"Start-Sleep -Seconds {delay_sec}; "
+        f"Start-Process -FilePath \"{py}\" -ArgumentList '-u',\"{script}\" "
+        f"-WorkingDirectory \"{BASE_DIR}\" -WindowStyle Hidden "
+        f"-RedirectStandardOutput \"_web_server.log\" "
+        f"-RedirectStandardError \"_web_server.err.log\""
+    )
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+            cwd=str(BASE_DIR),
+            creationflags=(getattr(subprocess, "DETACHED_PROCESS", 0)
+                           | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+            close_fds=True,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("[Update] Could not spawn restarter: %s", exc)
+        return False
+    # Let Flask flush the HTTP response first, then hard-exit to free the port.
+    threading.Timer(2.0, lambda: os._exit(0)).start()
+    logger.info("[Update] Restart scheduled — server will relaunch in ~%ds.", delay_sec)
+    return True
+
+
+@app.get("/api/update/check")
+def api_update_check():
+    """Fetch from GitHub and report whether a newer version is available."""
+    if not _git_repo_present():
+        return jsonify({"ok": False,
+                        "error": "This install isn't a git checkout, so it can't self-update. "
+                                 "Re-install by cloning the GitHub repo to enable one-click updates."})
+    if not _has_remote():
+        return jsonify({"ok": False,
+                        "error": "No GitHub remote is configured for this checkout."})
+    branch = _current_branch()
+    rc, _, err = _git("fetch", "origin", branch, timeout=120)
+    if rc != 0:
+        return jsonify({"ok": False, "error": f"Couldn't reach GitHub (git fetch): {err or 'unknown error'}"})
+
+    _, local_sha, _  = _git("rev-parse", "HEAD")
+    _, remote_sha, _ = _git("rev-parse", f"origin/{branch}")
+    _, behind_str, _ = _git("rev-list", "--count", f"HEAD..origin/{branch}")
+    try:
+        behind = int(behind_str or "0")
+    except ValueError:
+        behind = 0
+    _, status_out, _ = _git("status", "--porcelain")
+    dirty = bool(status_out.strip())
+    _, cur_desc, _ = _git("log", "-1", "--pretty=%h %s (%cr)")
+
+    changelog: list = []
+    if behind:
+        _, log_out, _ = _git("log", "--pretty=%h %s", f"HEAD..origin/{branch}")
+        changelog = [ln for ln in log_out.splitlines() if ln.strip()][:50]
+
+    return jsonify({
+        "ok":               True,
+        "branch":           branch,
+        "update_available": behind > 0,
+        "behind_by":        behind,
+        "current":          cur_desc,
+        "local_sha":        local_sha[:8],
+        "remote_sha":       remote_sha[:8],
+        "dirty":            dirty,
+        "changelog":        changelog,
+    })
+
+
+@app.post("/api/update/apply")
+def api_update_apply():
+    """Pull the latest version from GitHub (fast-forward) and restart the server.
+    Untracked files (config.json, state.json, caches) are never touched."""
+    if not _git_repo_present():
+        return jsonify({"ok": False, "error": "Not a git checkout — can't self-update."})
+    if not _has_remote():
+        return jsonify({"ok": False, "error": "No GitHub remote is configured."})
+    body  = request.get_json(silent=True) or {}
+    force = bool(body.get("force"))
+    branch = _current_branch()
+
+    _git("fetch", "origin", branch, timeout=120)
+    _, status_out, _ = _git("status", "--porcelain")
+    if status_out.strip() and not force:
+        return jsonify({
+            "ok": False, "dirty": True,
+            "error": "This machine has local edits to tracked files. Updating would discard them. "
+                     "Use Force update to overwrite with the GitHub version (your config and "
+                     "downloaded data are safe — they're not tracked).",
+        })
+
+    if force:
+        rc, out, err = _git("reset", "--hard", f"origin/{branch}", timeout=180)
+    else:
+        rc, out, err = _git("pull", "--ff-only", "origin", branch, timeout=180)
+    if rc != 0:
+        return jsonify({"ok": False, "error": f"Update failed: {err or out or 'unknown error'}"})
+
+    _, new_desc, _ = _git("log", "-1", "--pretty=%h %s")
+    restarting = _schedule_self_restart()
+    return jsonify({"ok": True, "updated_to": new_desc, "restarting": restarting})
 
 
 # ---------------------------------------------------------------------------
