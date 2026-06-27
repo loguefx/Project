@@ -457,6 +457,205 @@ def api_group_reliability():
     })
 
 
+def _parse_state_key(key: str) -> dict:
+    """Turn a state key (tv::Show::S03E05 / tv::Show::S03::pack / movie::T::Year)
+    into a friendly label + structured fields for the progress view."""
+    parts = (key or "").split("::")
+    kind = parts[0] if parts else ""
+    if kind == "tv" and len(parts) >= 3:
+        show = parts[1]
+        tag = parts[2]
+        m = re.match(r"[sS](\d+)[eE](\d+)", tag)
+        if m:
+            s, e = int(m.group(1)), int(m.group(2))
+            return {"kind": "tv", "show": show, "season": s, "episode": e,
+                    "label": f"{show} · S{s:02d}E{e:02d}"}
+        sm = re.match(r"[sS](\d+)", tag)
+        if sm:
+            s = int(sm.group(1))
+            return {"kind": "tv", "show": show, "season": s, "episode": None,
+                    "label": f"{show} · Season {s} (pack)"}
+        return {"kind": "tv", "show": show, "season": None, "episode": None,
+                "label": f"{show} · {tag}"}
+    if kind == "movie" and len(parts) >= 3:
+        return {"kind": "movie", "show": parts[1], "season": None, "episode": None,
+                "label": f"{parts[1]} ({parts[2]})"}
+    return {"kind": kind or "?", "show": key, "season": None, "episode": None, "label": key}
+
+
+@app.get("/api/download-progress")
+def api_download_progress():
+    """Per-episode download health, joined from the bookkeeping the pipeline
+    already maintains — so the user can see real wins (downloaded + passed
+    validation) vs. churn (corrupt release removed, retrying) vs. give-ups.
+
+    Status precedence per episode:
+      exhausted  – all release sources tried, still no good copy
+      validated  – downloaded AND passed full integrity validation (a real win)
+      search_failed – no torrent found yet (in the retry/backoff queue)
+      retrying   – a previous release was removed as corrupt; trying another
+      downloading – in flight (downloading or awaiting validation)
+    """
+    state = load_state()
+    downloaded = state.get("downloaded_torrents", {}) or {}
+    queued = set(state.get("queued", []) or [])
+    blacklist = state.get("torrent_blacklist", {}) or {}
+    quarantine = state.get("quarantine", {}) or {}
+    retry_queue = state.get("retry_queue", {}) or {}
+
+    # unresolved_downloads.episodes are label strings ("Show Name S03E05"); map
+    # them back to a likely tv state key so we can join attempts/blacklist.
+    unresolved_keys: set[str] = set()
+    extra_unresolved: list[str] = []
+    unresolved = state.get("unresolved_downloads", {}) or {}
+    for item in unresolved.get("episodes", []) or []:
+        if isinstance(item, dict):
+            k = item.get("state_key") or item.get("key")
+            if k:
+                unresolved_keys.add(k)
+                continue
+            item = item.get("label") or item.get("show") or ""
+        if isinstance(item, str) and item.strip():
+            m = re.match(r"^(.*?)\s+([sS]\d+(?:[eE]\d+)?.*)$", item.strip())
+            if m:
+                unresolved_keys.add(f"tv::{m.group(1)}::{m.group(2)}")
+            else:
+                extra_unresolved.append(item.strip())
+
+    # Best-effort live qBit progress, matched by release name.
+    qbit_by_name: dict = {}
+    try:
+        for t in get_qbit_torrents():
+            nm = (t.get("name") or "").strip()
+            if nm:
+                qbit_by_name[nm] = t
+    except Exception:  # pylint: disable=broad-except
+        qbit_by_name = {}
+
+    def _match_qbit(release: str):
+        if not release:
+            return None
+        t = qbit_by_name.get(release)
+        if t is None:
+            rl = release.lower()
+            for nm, cand in qbit_by_name.items():
+                low = nm.lower()
+                if rl in low or low in rl:
+                    t = cand
+                    break
+        if not t:
+            return None
+        prog = t.get("progress", 0) or 0
+        return {
+            "state": t.get("state", ""),
+            "progress": round(prog * 100, 1),
+            "dlspeed_mb": round((t.get("dlspeed", 0) or 0) / 1024 ** 2, 2),
+            "num_seeds": t.get("num_complete", 0),
+        }
+
+    all_keys = set(downloaded) | queued | set(retry_queue) | unresolved_keys
+
+    episodes = []
+    for key in all_keys:
+        info = _parse_state_key(key)
+        dt = downloaded.get(key, {}) or {}
+        attempts = len(blacklist.get(key, []) or [])
+        in_quarantine = key in quarantine
+        validated = bool(dt.get("validated_ok"))
+
+        # Live qBit lookup for anything that might still be in flight.
+        qb = None
+        if not validated and key not in unresolved_keys and key not in retry_queue:
+            qb = _match_qbit(dt.get("release", ""))
+        actively_downloading = bool(qb and qb.get("progress", 100) < 100)
+
+        if key in unresolved_keys:
+            status = "exhausted"
+        elif validated:
+            status = "validated"
+        elif key in retry_queue:
+            status = "search_failed"
+        elif attempts > 0 or in_quarantine:
+            status = "retrying"
+        elif actively_downloading:
+            status = "downloading"
+        else:
+            # In our books but not actively downloading and not integrity-checked:
+            # either finished and awaiting validation, or finished long ago unstamped.
+            status = "pending"
+
+        rq = retry_queue.get(key, {}) or {}
+        episodes.append({
+            "key": key,
+            "label": info["label"],
+            "show": info["show"],
+            "season": info["season"],
+            "episode": info["episode"],
+            "kind": info["kind"],
+            "status": status,
+            "release": dt.get("release", "") or rq.get("label", ""),
+            "queued_at": dt.get("queued_at", ""),
+            "validated_at": dt.get("validated_at", ""),
+            "failed_attempts": attempts,
+            "search_attempts": rq.get("attempts", 0),
+            "qbit": qb,
+        })
+
+    # Labels we couldn't map back to a state key — still surface them as exhausted.
+    for lbl in extra_unresolved:
+        episodes.append({
+            "key": lbl, "label": lbl, "show": lbl, "season": None, "episode": None,
+            "kind": "tv", "status": "exhausted", "release": "", "queued_at": "",
+            "validated_at": "", "failed_attempts": 0, "search_attempts": 0, "qbit": None,
+        })
+
+    summary = {"validated": 0, "pending": 0, "downloading": 0, "retrying": 0,
+               "search_failed": 0, "exhausted": 0}
+    for e in episodes:
+        summary[e["status"]] = summary.get(e["status"], 0) + 1
+    # True total of releases ever discarded as corrupt (independent of current keys).
+    summary["corrupt_removed"] = sum(
+        len(v) for v in blacklist.values() if isinstance(v, list))
+
+    # Bucket by status; keep the small actionable buckets in full and cap the
+    # large ones (the summary still carries the true totals). Optional ?status=
+    # filter returns one bucket uncapped for drill-down.
+    buckets: dict = {}
+    for e in episodes:
+        buckets.setdefault(e["status"], []).append(e)
+    for st, items in buckets.items():
+        if st == "validated":
+            items.sort(key=lambda e: (e["validated_at"] or e["queued_at"] or ""), reverse=True)
+        elif st in ("downloading", "retrying"):
+            items.sort(key=lambda e: (e["qbit"] or {}).get("progress", 0), reverse=True)
+
+    want = (request.args.get("status") or "").strip()
+    if want and want in buckets:
+        items = buckets[want]
+        return jsonify({
+            "summary": summary, "total_episodes": len(episodes),
+            "shown": len(items), "episodes": items, "status_filter": want,
+            "qbit_online": bool(qbit_by_name), "last_run": state.get("last_run"),
+        })
+
+    caps = {"search_failed": 150, "pending": 200, "validated": 100}
+    order = ["exhausted", "retrying", "downloading", "search_failed", "pending", "validated"]
+    trimmed = []
+    for st in order:
+        items = buckets.get(st, [])
+        cap = caps.get(st)
+        trimmed.extend(items if cap is None else items[:cap])
+
+    return jsonify({
+        "summary": summary,
+        "total_episodes": len(episodes),
+        "shown": len(trimmed),
+        "episodes": trimmed,
+        "qbit_online": bool(qbit_by_name),
+        "last_run": state.get("last_run"),
+    })
+
+
 @app.get("/api/library/live")
 def api_library_live():
     """

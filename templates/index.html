@@ -1576,6 +1576,10 @@
         Libraries
       </div>
       <div class="tab" onclick="switchTab('queue')">Active Queue<span class="tab-badge hidden" id="queue-badge"></span></div>
+      <div class="tab" onclick="switchTab('progress')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px;vertical-align:-2px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        Progress
+      </div>
       <div class="tab" onclick="switchTab('watchlist')">Watchlist</div>
       <div class="tab" onclick="switchTab('discover')">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px;vertical-align:-2px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1738,6 +1742,44 @@
         </div>
       </div>
       <div id="queue-content" style="display:flex;flex-direction:column;gap:8px">
+        <div class="empty-state"><div class="spinner" style="margin:0 auto 12px"></div><div class="empty-text">Loading…</div></div>
+      </div>
+    </div>
+
+    <!-- ─── Progress tab ─── -->
+    <style>
+      .prog-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:8px; }
+      .prog-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 14px; cursor:pointer; transition:border-color .12s, transform .12s; }
+      .prog-card:hover { border-color:var(--accent2); transform:translateY(-1px); }
+      .prog-card.active { border-color:var(--accent2); box-shadow:inset 0 0 0 1px var(--accent2); }
+      .prog-card .pc-val { font-size:24px; font-weight:700; line-height:1.05; }
+      .prog-card .pc-label { font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-top:5px; }
+      .prog-card .pc-desc { font-size:10.5px; color:var(--muted); opacity:.8; margin-top:2px; }
+      .prog-row { display:flex; align-items:center; gap:12px; padding:9px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px; }
+      .prog-row .pr-label { font-weight:600; font-size:13px; }
+      .prog-row .pr-sub { font-size:11px; color:var(--muted); margin-top:2px; word-break:break-all; }
+      .st-badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; padding:3px 8px; border-radius:999px; white-space:nowrap; flex-shrink:0; }
+    </style>
+    <div class="tab-panel" id="tab-progress">
+      <div class="section-heading">
+        <span class="section-title">Download Progress</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="progress-updated" style="font-size:11px;color:var(--muted)"></span>
+          <button class="btn btn-ghost" onclick="loadProgress()" style="font-size:12px">Refresh</button>
+        </div>
+      </div>
+      <p style="margin:-4px 0 14px;font-size:12.5px;color:var(--muted);line-height:1.55">
+        Is anything actually landing cleanly? <strong style="color:#46d369">Validated</strong> means downloaded <em>and</em> passed a full integrity check — a real win.
+        <strong style="color:#5aa6ff">Done</strong> is downloaded but not yet integrity-checked. <strong style="color:#f5a623">Retrying</strong> means a corrupt copy was removed and a different release is being tried.
+        Click any card to drill into that group.
+      </p>
+      <div class="prog-cards" id="progress-cards"></div>
+      <div id="progress-corrupt-note" style="margin:4px 0 18px;font-size:12px;color:var(--muted)"></div>
+      <div class="section-heading" style="margin-top:4px">
+        <span class="section-title" id="progress-list-title" style="font-size:14px">Episodes</span>
+        <span id="progress-filter-clear"></span>
+      </div>
+      <div id="progress-list" style="display:flex;flex-direction:column;gap:6px">
         <div class="empty-state"><div class="spinner" style="margin:0 auto 12px"></div><div class="empty-text">Loading…</div></div>
       </div>
     </div>
@@ -3634,7 +3676,7 @@ function scrollLogsBottom() {
 // ─────────────────────────────────────────────
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t, i) => {
-    const names = ['downloads','libraries','queue','watchlist','discover','logs','settings'];
+    const names = ['downloads','libraries','queue','progress','watchlist','discover','logs','settings'];
     t.classList.toggle('active', names[i] === name);
   });
   document.querySelectorAll('.tab-panel').forEach(p => {
@@ -3644,6 +3686,7 @@ function switchTab(name) {
   if      (name === 'libraries') loadLibrariesOverview();
   else if (name === 'library')   switchTab('libraries');
   else if (name === 'queue')     { _queueFirstLoad = true; _startQueuePoll(); }
+  else if (name === 'progress')  { _progressFirstLoad = true; _startProgressPoll(); }
   else if (name === 'watchlist') refreshWatchlist();
   else if (name === 'discover')  loadDiscover();
   else if (name === 'logs')      refreshLogs();
@@ -3651,8 +3694,126 @@ function switchTab(name) {
 
   // Stop queue polling when leaving queue tab
   if (name !== 'queue') _stopQueuePoll();
+  // Stop progress polling when leaving progress tab
+  if (name !== 'progress') _stopProgressPoll();
   // Stop discover auto-refresh when leaving discover tab
   if (name !== 'discover' && _discAutoTimer) { clearInterval(_discAutoTimer); _discAutoTimer = null; }
+}
+
+// ─────────────────────────────────────────────
+// Download Progress tab — real wins vs corrupt-churn vs give-ups
+// ─────────────────────────────────────────────
+let _progressTimer = null, _progressFirstLoad = false, _progressFilter = '';
+
+const PROG_META = {
+  validated:     { label: 'Validated',   color: '#46d369' },
+  pending:       { label: 'Done',        color: '#5aa6ff' },
+  downloading:   { label: 'Downloading', color: '#27c5c5' },
+  retrying:      { label: 'Retrying',    color: '#f5a623' },
+  search_failed: { label: 'No release',  color: '#8a8f98' },
+  exhausted:     { label: 'Gave up',     color: '#ff5656' },
+};
+const PROG_ORDER = ['validated','pending','downloading','retrying','search_failed','exhausted'];
+
+function _startProgressPoll() {
+  loadProgress();
+  if (_progressTimer) clearInterval(_progressTimer);
+  _progressTimer = setInterval(loadProgress, 15000);
+}
+function _stopProgressPoll() {
+  if (_progressTimer) { clearInterval(_progressTimer); _progressTimer = null; }
+}
+
+async function loadProgress() {
+  try {
+    const url = '/api/download-progress' + (_progressFilter ? ('?status=' + encodeURIComponent(_progressFilter)) : '');
+    const r = await fetch(url);
+    const d = await r.json();
+    renderProgressCards(d.summary || {});
+    renderProgressList(d);
+    const note = document.getElementById('progress-corrupt-note');
+    if (note) {
+      const cr = (d.summary || {}).corrupt_removed || 0;
+      note.innerHTML = `${cr.toLocaleString()} corrupt release(s) discarded and re-searched across all episodes`
+        + (d.qbit_online ? '' : ' · <span style="color:#ff9090">qBittorrent offline — live download state unavailable</span>');
+    }
+    const upd = document.getElementById('progress-updated');
+    if (upd) upd.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    const list = document.getElementById('progress-list');
+    if (list) list.innerHTML = '<div class="empty-state"><div class="empty-text">Couldn\'t load progress.</div></div>';
+  }
+}
+
+function renderProgressCards(summary) {
+  const wrap = document.getElementById('progress-cards');
+  if (!wrap) return;
+  wrap.innerHTML = PROG_ORDER.map(st => {
+    const m = PROG_META[st];
+    const n = summary[st] || 0;
+    const active = _progressFilter === st ? ' active' : '';
+    return `<div class="prog-card${active}" onclick="setProgressFilter('${st}')">
+      <div class="pc-val" style="color:${m.color}">${n.toLocaleString()}</div>
+      <div class="pc-label">${m.label}</div>
+    </div>`;
+  }).join('');
+}
+
+function setProgressFilter(st) {
+  _progressFilter = (_progressFilter === st) ? '' : st;
+  loadProgress();
+}
+
+function renderProgressList(d) {
+  const list = document.getElementById('progress-list');
+  const title = document.getElementById('progress-list-title');
+  const clear = document.getElementById('progress-filter-clear');
+  const eps = d.episodes || [];
+  const summary = d.summary || {};
+  if (title) {
+    if (_progressFilter) {
+      const m = PROG_META[_progressFilter] || { label: _progressFilter };
+      title.textContent = `${m.label} — showing ${d.shown} of ${summary[_progressFilter] || 0}`;
+    } else {
+      title.textContent = `Episodes — showing ${d.shown} of ${d.total_episodes}`;
+    }
+  }
+  if (clear) {
+    clear.innerHTML = _progressFilter
+      ? `<button class="btn btn-ghost" style="font-size:12px" onclick="setProgressFilter('${_progressFilter}')">Clear filter</button>`
+      : '';
+  }
+  if (!eps.length) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-text">Nothing to show here yet.</div></div>';
+    return;
+  }
+  list.innerHTML = eps.map(e => {
+    const m = PROG_META[e.status] || { label: e.status, color: '#8a8f98' };
+    const badge = `<span class="st-badge" style="background:${m.color}22;color:${m.color};border:1px solid ${m.color}55">${m.label}</span>`;
+    let right = '';
+    if (e.qbit) {
+      const spd = e.qbit.dlspeed_mb ? (e.qbit.dlspeed_mb + ' MB/s') : '';
+      const sds = (e.qbit.num_seeds != null) ? (e.qbit.num_seeds + ' seeds') : '';
+      right = `<div style="min-width:120px;text-align:right">
+        <div style="font-size:12px;color:var(--text);font-weight:600">${e.qbit.progress}%</div>
+        <div style="font-size:10px;color:var(--muted)">${[spd, sds].filter(Boolean).join(' · ')}</div></div>`;
+    } else if (e.status === 'retrying' || e.status === 'exhausted') {
+      right = `<div style="min-width:120px;text-align:right;font-size:11px;color:var(--muted)">${e.failed_attempts} bad release(s)</div>`;
+    } else if (e.status === 'search_failed') {
+      right = `<div style="min-width:120px;text-align:right;font-size:11px;color:var(--muted)">${e.search_attempts || 0} search tries</div>`;
+    } else if (e.status === 'validated' && e.validated_at) {
+      right = `<div style="min-width:120px;text-align:right;font-size:11px;color:var(--muted)">${escapeHtml(e.validated_at.replace('T', ' '))}</div>`;
+    }
+    const sub = e.release ? `<div class="pr-sub">${escapeHtml(e.release)}</div>` : '';
+    return `<div class="prog-row">
+      ${badge}
+      <div style="flex:1;min-width:0">
+        <div class="pr-label">${escapeHtml(e.label)}</div>
+        ${sub}
+      </div>
+      ${right}
+    </div>`;
+  }).join('');
 }
 
 // ─────────────────────────────────────────────
