@@ -37,8 +37,10 @@ SERVICE_DESC = (
     "workers, and supports in-app updates from GitHub Releases."
 )
 
-# Args that mean "act as the downloader CLI" rather than the service/web host.
-_DOWNLOADER_PREFIXES = ("--",)
+# The only downloader subcommands the web server ever spawns of itself (frozen).
+# Anything else is treated as service-control / serve so that pywin32 options
+# like `--startup auto install` reach win32serviceutil.HandleCommandLine.
+_DOWNLOADER_VERBS = {"--run-now", "--rss-grab", "--watch-downloads", "--validate-paths"}
 
 
 def _configure_file_logging(logfile_name: str) -> None:
@@ -161,7 +163,7 @@ def main():
     argv = sys.argv[1:]
 
     # 1) Downloader subcommands (web server spawns these as separate processes).
-    if argv and argv[0].startswith(_DOWNLOADER_PREFIXES):
+    if argv and argv[0] in _DOWNLOADER_VERBS:
         _configure_file_logging("subprocess.log")
         _run_downloader(argv)
         return

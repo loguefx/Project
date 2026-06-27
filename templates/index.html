@@ -1405,6 +1405,11 @@
         <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
       </svg>
       Jellyfin Downloader
+      <span id="app-version-badge" title="Installed version — click to check for updates"
+            onclick="switchTab('settings'); setTimeout(()=>document.getElementById('settings-update')?.scrollIntoView({behavior:'smooth'}),150);"
+            style="margin-left:9px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;
+                   font-family:ui-monospace,'Cascadia Code','Consolas',monospace;cursor:pointer;
+                   color:var(--muted);background:var(--surface2);border:1px solid var(--border)">v{{ app_version }}</span>
     </div>
     <div class="nav-right">
       <div class="nav-speed hidden" id="nav-speed" title="Total download speed">
@@ -2904,6 +2909,22 @@ async function checkUpdate() {
     _updateMode = d.mode || 'release';
     document.getElementById('update-current-ver').textContent =
       'v' + (d.current_version || '?') + (d.mode === 'git' && d.current ? '  (' + d.current + ')' : '');
+
+    const badge = document.getElementById('app-version-badge');
+    if (badge && d.current_version) badge.textContent = 'v' + d.current_version;
+    if (badge) {
+      if (d.update_available) {
+        badge.style.color = '#1a1a1a';
+        badge.style.background = '#fee75c';
+        badge.style.borderColor = '#fee75c';
+        badge.title = 'Update available — click to update';
+      } else {
+        badge.style.color = 'var(--muted)';
+        badge.style.background = 'var(--surface2)';
+        badge.style.borderColor = 'var(--border)';
+        badge.title = 'Installed version — click to check for updates';
+      }
+    }
 
     if (d.update_available) {
       result.style.background = 'rgba(254,231,92,.12)';

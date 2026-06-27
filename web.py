@@ -1719,7 +1719,7 @@ def api_check():
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", app_version=APP_VERSION)
 
 
 # ---------------------------------------------------------------------------
