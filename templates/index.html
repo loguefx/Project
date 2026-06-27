@@ -2944,9 +2944,11 @@ async function checkUpdate() {
     } else {
       result.style.background = 'rgba(34,197,94,.12)';
       result.style.color = 'var(--green)';
-      result.textContent = d.no_asset
-        ? "Latest release has no downloadable build attached yet."
-        : "✓ You're on the latest version.";
+      result.textContent = d.message
+        ? d.message
+        : (d.no_asset
+            ? "Latest release has no downloadable build attached yet."
+            : "✓ You're on the latest version.");
     }
     if (d.mode === 'git' && d.dirty) {
       force.classList.remove('hidden');

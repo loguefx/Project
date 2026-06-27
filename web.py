@@ -3194,6 +3194,16 @@ def _release_latest() -> dict:
     return r.json()
 
 
+def _repo_accessible() -> bool:
+    """True if we can read the repo metadata (public, or private + valid token)."""
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+        r = req.get(url, headers=_gh_headers(), timeout=20)
+        return r.status_code == 200
+    except Exception:  # pylint: disable=broad-except
+        return False
+
+
 def _pick_zip_asset(release: dict) -> Optional[dict]:
     for a in release.get("assets", []) or []:
         if str(a.get("name", "")).lower().endswith(".zip"):
@@ -3313,11 +3323,24 @@ def _release_check() -> dict:
         rel = _release_latest()
     except req.HTTPError as exc:  # pylint: disable=broad-except
         code = getattr(exc.response, "status_code", 0)
-        if code in (401, 403, 404):
+        if code == 404:
+            # 404 is ambiguous: either no releases yet (repo readable) or the
+            # repo is private/inaccessible. Disambiguate by probing the repo.
+            if _repo_accessible():
+                return {"ok": True, "mode": "release",
+                        "current_version": APP_VERSION,
+                        "latest_version": APP_VERSION,
+                        "update_available": False,
+                        "notes": "",
+                        "message": "No releases published yet — publish one with release.ps1."}
             return {"ok": False, "error": (
-                "Couldn't read GitHub Releases. If the repo is private, add a GitHub token "
-                "to config.json under \"update\": {\"github_token\": \"...\"} (needs 'repo' "
-                "read access), or make the repo public.")}
+                "Couldn't read the GitHub repo. If it's private, add a token to config.json "
+                "under \"update\": {\"github_token\": \"...\"} (needs 'repo' read access), "
+                "or make the repo public.")}
+        if code in (401, 403):
+            return {"ok": False, "error": (
+                "GitHub denied the request. Add a valid token to config.json under "
+                "\"update\": {\"github_token\": \"...\"} with 'repo' read access.")}
         return {"ok": False, "error": f"GitHub error: {exc}"}
     except Exception as exc:  # pylint: disable=broad-except
         return {"ok": False, "error": f"Couldn't reach GitHub: {exc}"}
