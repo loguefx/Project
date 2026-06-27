@@ -3385,16 +3385,23 @@ def _download_asset(asset: dict, dest: Path) -> None:
                     _set_update_state(downloaded=done)
 
 
+# One-shot scheduled task used to run the swap helper independently of the
+# service process (so `sc stop` of ourselves doesn't kill the helper mid-swap).
+_UPDATE_TASK_NAME = "ShowTVDownloaderSelfUpdate"
+
+
 def _write_apply_helper(staging_app: Path, update_dir: Path) -> Path:
-    """Write a detached PowerShell helper that stops the service, mirrors the new
-    app files over the install dir, then restarts the service."""
+    """Write a PowerShell helper that stops the service, mirrors the new app
+    files over the install dir, restarts the service, then removes the one-shot
+    scheduled task that launched it."""
     install_dir = str(EXE_DIR)
     log_path = str(update_dir / "apply_update.log")
     ps = f"""
 $ErrorActionPreference = 'Continue'
-$svc = '{SERVICE_NAME_FOR_UPDATER}'
-$src = '{str(staging_app)}'
-$dst = '{install_dir}'
+$svc  = '{SERVICE_NAME_FOR_UPDATER}'
+$src  = '{str(staging_app)}'
+$dst  = '{install_dir}'
+$task = '{_UPDATE_TASK_NAME}'
 Start-Transcript -Path '{log_path}' -Force | Out-Null
 Write-Output "Stopping $svc..."
 sc.exe stop $svc | Out-Null
@@ -3405,11 +3412,14 @@ for ($i = 0; $i -lt 60; $i++) {{
 }}
 Start-Sleep -Seconds 2
 Write-Output "Mirroring new build into $dst..."
-robocopy $src $dst /MIR /R:3 /W:2 /NFL /NDL /NJH /NJS | Out-Null
+robocopy $src $dst /E /R:3 /W:2 /NFL /NDL /NJH /NJS
+Write-Output "robocopy exit code: $LASTEXITCODE"
 Write-Output "Starting $svc..."
 sc.exe start $svc | Out-Null
 Start-Sleep -Seconds 2
 Remove-Item -LiteralPath $src -Recurse -Force -ErrorAction SilentlyContinue
+Write-Output "Removing one-shot task $task..."
+schtasks /Delete /TN $task /F | Out-Null
 Stop-Transcript | Out-Null
 """.strip()
     helper = update_dir / "apply_update.ps1"
@@ -3418,12 +3428,32 @@ Stop-Transcript | Out-Null
 
 
 def _spawn_apply_helper(helper: Path) -> None:
+    """Run the swap helper via a one-shot Scheduled Task running as SYSTEM.
+
+    A scheduled task runs in its own Task Scheduler-hosted process, completely
+    independent of this service. That's essential: the helper's first act is to
+    stop *this* service, and anything spawned as our child would be torn down
+    along with us before it could copy the new files and start us again.
+    """
+    # A tiny .cmd launcher avoids schtasks' fragile /TR quote handling.
+    launcher = helper.parent / "run_update.cmd"
+    launcher.write_text(
+        "@echo off\r\n"
+        f'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{helper}"\r\n',
+        encoding="utf-8",
+    )
+    flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    # (Re)create the one-shot task, then trigger it immediately.
+    subprocess.run(
+        ["schtasks", "/Create", "/F", "/TN", _UPDATE_TASK_NAME,
+         "/RU", "SYSTEM", "/RL", "HIGHEST", "/SC", "ONCE", "/ST", "23:59",
+         "/TR", str(launcher)],
+        capture_output=True, text=True, creationflags=flags,
+    )
     subprocess.Popen(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-         "-WindowStyle", "Hidden", "-File", str(helper)],
-        creationflags=(getattr(subprocess, "DETACHED_PROCESS", 0)
-                       | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
-        close_fds=True,
+        ["schtasks", "/Run", "/TN", _UPDATE_TASK_NAME],
+        creationflags=flags, close_fds=True,
     )
 
 
