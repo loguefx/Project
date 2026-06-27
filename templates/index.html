@@ -1424,46 +1424,60 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
         Check
       </button>
-      <button class="btn btn-ghost" id="btn-reannounce" onclick="reannounceStalled()" title="Force all stalled qBittorrent torrents to re-contact the tracker">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
-        Fix Stalled
-      </button>
-      <button class="btn btn-ghost" id="btn-recover" onclick="recoverStalled()" title="Remove zero-seed stalled torrents and queue replacements on next run">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/></svg>
-        Retry Stalled
-      </button>
-      <button class="btn btn-ghost" id="btn-extract" onclick="runExtract()" title="Extract RAR archives found in your library paths (requires 7-Zip)">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Extract RARs
-      </button>
-      <button class="btn btn-ghost" id="btn-rename" onclick="runRename()" title="Rename all scene-style filenames to clean Show Name - SxxExx format">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-        Clean Names
-      </button>
-      <button class="btn btn-ghost" id="btn-resend" onclick="resendSummary()" title="Resend the last scan summary notification to Discord">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-        Resend Notif
-      </button>
-      <button class="btn btn-ghost" id="btn-find-broken" onclick="findBroken()" title="Scan entire library for files with no video/audio. Reports them so you can confirm before removal.">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        Find Broken Files
-      </button>
-      <button class="btn btn-ghost" id="btn-find-dupes" onclick="findDuplicates()" title="Quick scan for duplicate episodes — e.g. a single episode that is already included in a combined S05-E06 file. Keeps the combined file, removes the redundant single (you confirm first).">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        Find Duplicates
-      </button>
-      <button class="btn btn-ghost" id="btn-validate-paths" onclick="validatePaths()" title="Deep-check specific show/season UNC path(s) for stutter/corruption, then auto-remove and re-download a different torrent — verifying each replacement.">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-        Validate &amp; Fix Path
-      </button>
-      <button class="btn btn-ghost" id="btn-split-series" onclick="findSplitSeries()" title="Scan your configured NAS libraries for shows whose episodes are split across more than one library path (e.g. the same show on Jellyfin1 and Jellyfin6). Reports every split show and its locations so you can manually consolidate them.">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
-        Find Split Series
-      </button>
-      <button class="btn btn-ghost" id="btn-reliability" onclick="showReliability()" title="See what release groups our system has learned to avoid (based on past corrupt downloads)">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        Group Reliability
-      </button>
+      <div class="tools-dd" id="tools-dd">
+        <button class="btn btn-ghost" id="btn-tools" onclick="toggleToolsMenu(event)" aria-haspopup="true" title="Maintenance &amp; library tools">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+          Tools
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-left:1px;opacity:.7"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="tools-menu" id="tools-menu">
+          <div class="tools-label">Downloads</div>
+          <button class="tools-item" onclick="closeToolsMenu();reannounceStalled()" title="Force all stalled qBittorrent torrents to re-contact the tracker">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+            Fix Stalled
+          </button>
+          <button class="tools-item" onclick="closeToolsMenu();recoverStalled()" title="Remove zero-seed stalled torrents and queue replacements on next run">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/></svg>
+            Retry Stalled
+          </button>
+          <div class="tools-sep"></div>
+          <div class="tools-label">Library maintenance</div>
+          <button class="tools-item" onclick="closeToolsMenu();runExtract()" title="Extract RAR archives found in your library paths (requires 7-Zip)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Extract RARs
+          </button>
+          <button class="tools-item" onclick="closeToolsMenu();runRename()" title="Rename all scene-style filenames to clean Show Name - SxxExx format">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            Clean Names
+          </button>
+          <button class="tools-item" onclick="closeToolsMenu();findBroken()" title="Scan entire library for files with no video/audio. Reports them so you can confirm before removal.">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            Find Broken Files
+          </button>
+          <button class="tools-item" onclick="closeToolsMenu();findDuplicates()" title="Quick scan for duplicate episodes — e.g. a single episode that is already included in a combined S05-E06 file. Keeps the combined file, removes the redundant single (you confirm first).">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Find Duplicates
+          </button>
+          <button class="tools-item" onclick="closeToolsMenu();validatePaths()" title="Deep-check specific show/season UNC path(s) for stutter/corruption, then auto-remove and re-download a different torrent — verifying each replacement.">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            Validate &amp; Fix Path
+          </button>
+          <button class="tools-item" onclick="closeToolsMenu();findSplitSeries()" title="Scan your configured NAS libraries for shows whose episodes are split across more than one library path. Reports every split show and its locations so you can manually consolidate them.">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+            Find Split Series
+          </button>
+          <div class="tools-sep"></div>
+          <div class="tools-label">Info &amp; notifications</div>
+          <button class="tools-item" onclick="closeToolsMenu();showReliability()" title="See what release groups our system has learned to avoid (based on past corrupt downloads)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            Group Reliability
+          </button>
+          <button class="tools-item" onclick="closeToolsMenu();resendSummary()" title="Resend the last scan summary notification to Discord">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Resend Notif
+          </button>
+        </div>
+      </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:1px">
         <button class="btn btn-primary" id="btn-run" onclick="triggerRun(false)" title="Search for missing episodes on all your NAS libraries and queue them in qBittorrent">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -1473,6 +1487,49 @@
       </div>
     </div>
   </nav>
+
+  <style>
+    .tools-dd { position: relative; display: inline-block; }
+    #btn-tools { display: inline-flex; align-items: center; gap: 6px; }
+    .tools-menu {
+      position: absolute; right: 0; top: calc(100% + 6px);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 6px; min-width: 236px;
+      box-shadow: 0 16px 38px rgba(0,0,0,.5); z-index: 300;
+      display: none; flex-direction: column;
+    }
+    .tools-menu.open { display: flex; }
+    .tools-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; border-radius: 7px; background: transparent;
+      border: none; color: var(--text); font-size: 13px; cursor: pointer;
+      text-align: left; width: 100%; transition: background .12s ease;
+    }
+    .tools-item:hover { background: var(--surface2); }
+    .tools-item svg { color: var(--muted); flex-shrink: 0; }
+    .tools-item:hover svg { color: var(--text); }
+    .tools-sep { height: 1px; background: var(--border); margin: 6px 4px; }
+    .tools-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
+      color: var(--muted); padding: 6px 10px 3px; font-weight: 600;
+    }
+  </style>
+  <script>
+    function toggleToolsMenu(e){ if(e){ e.stopPropagation(); } document.getElementById('tools-menu')?.classList.toggle('open'); }
+    function closeToolsMenu(){ document.getElementById('tools-menu')?.classList.remove('open'); }
+    // Safe button accessor: actions that used to live in the header toolbar now
+    // live in the Tools menu. When their old button id is absent, return a stub
+    // so the existing disabled/innerHTML toggling is a harmless no-op.
+    function uiBtn(id){
+      return document.getElementById(id) || { disabled:false, innerHTML:"", textContent:"",
+               classList:{ add:function(){}, remove:function(){}, toggle:function(){} } };
+    }
+    document.addEventListener('click', function(e){
+      var dd = document.getElementById('tools-dd');
+      if (dd && !dd.contains(e.target)) closeToolsMenu();
+    });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeToolsMenu(); });
+  </script>
 
   <!-- ─── Scan status bar (thin top strip, kept for compat but hidden) ─── -->
   <div id="scan-status-bar" style="display:none">
@@ -3602,7 +3659,7 @@ function switchTab(name) {
 // Extract RARs — unpack scene archives on NAS
 // ─────────────────────────────────────────────
 async function runExtract() {
-  const btn = document.getElementById('btn-extract');
+  const btn = uiBtn('btn-extract');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Extracting…';
   try {
@@ -3630,7 +3687,7 @@ async function runExtract() {
 // Clean Names — rename scene filenames to Show Name - SxxExx
 // ─────────────────────────────────────────────
 async function runRename() {
-  const btn = document.getElementById('btn-rename');
+  const btn = uiBtn('btn-rename');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Renaming…';
   try {
@@ -3662,7 +3719,7 @@ let _brokenReport  = null;   // cached server response between scan + remove
 let _brokenPoll    = null;   // setInterval handle for status polling
 
 function _setFindBrokenButton(state, label) {
-  const btn = document.getElementById('btn-find-broken');
+  const btn = uiBtn('btn-find-broken');
   if (!btn) return;
   btn.disabled = (state === 'busy');
   if (state === 'busy') {
@@ -3732,7 +3789,7 @@ async function validatePaths() {
   const paths = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   if (!paths.length) { showToast('No paths entered.', 'error'); return; }
 
-  const btn = document.getElementById('btn-validate-paths');
+  const btn = uiBtn('btn-validate-paths');
   if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; }
   try {
     const r = await fetch('/api/validate-paths', {
@@ -4049,7 +4106,7 @@ async function confirmRemoveBroken() {
 let _dupesPoll = null;
 
 function _setDupesButton(state, label) {
-  const btn = document.getElementById('btn-find-dupes');
+  const btn = uiBtn('btn-find-dupes');
   if (!btn) return;
   if (state === 'busy') {
     btn.disabled = true;
@@ -4199,7 +4256,7 @@ async function confirmRemoveDupes() {
 let _splitPoll = null;
 
 function _setSplitButton(state, label) {
-  const btn = document.getElementById('btn-split-series');
+  const btn = uiBtn('btn-split-series');
   if (!btn) return;
   if (state === 'busy') {
     btn.disabled = true;
@@ -4310,7 +4367,7 @@ function closeSplitModal() {
 
 // ── Release-group Reliability ──────────────────────────────────────────────
 async function showReliability() {
-  const btn = document.getElementById('btn-reliability');
+  const btn = uiBtn('btn-reliability');
   const orig = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg> Loading…';
@@ -4381,7 +4438,7 @@ function escapeHtml(s) {
 // Resend last scan summary notification to Discord
 // ─────────────────────────────────────────────
 async function resendSummary() {
-  const btn = document.getElementById('btn-resend');
+  const btn = uiBtn('btn-resend');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Sending…';
   try {
@@ -4404,7 +4461,7 @@ async function resendSummary() {
 // Retry Stalled — remove 0-seed torrents, clear state, re-search next run
 // ─────────────────────────────────────────────
 async function recoverStalled() {
-  const btn = document.getElementById('btn-recover');
+  const btn = uiBtn('btn-recover');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Recovering…';
   try {
@@ -4430,7 +4487,7 @@ async function recoverStalled() {
 // Fix Stalled — force reannounce in qBittorrent
 // ─────────────────────────────────────────────
 async function reannounceStalled() {
-  const btn = document.getElementById('btn-reannounce');
+  const btn = uiBtn('btn-reannounce');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Reannouncing…';
   try {
