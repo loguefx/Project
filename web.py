@@ -3609,10 +3609,38 @@ for ($i = 0; $i -lt 60; $i++) {{
     if ($null -eq $s -or $s.Status -eq 'Stopped') {{ break }}
     Start-Sleep -Seconds 1
 }}
-Start-Sleep -Seconds 2
+
+# The service AND any worker subprocesses (watcher/campaign) are all the same
+# onedir exe, so they keep $dst\\ShowTVDownloader.exe and _internal\\*.dll locked
+# until every one of them exits. sc stop only stops the service; lingering
+# processes would make robocopy fail with ERROR 32 (in use) and silently leave
+# the OLD version in place. Wait for them to exit, then force-kill any straggler
+# whose image lives under the install dir.
+$dstLower = $dst.ToLower()
+function Get-AppProcs {{
+    Get-CimInstance Win32_Process -Filter "Name='ShowTVDownloader.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {{ $_.ExecutablePath -and $_.ExecutablePath.ToLower().StartsWith($dstLower) }}
+}}
+for ($i = 0; $i -lt 30; $i++) {{
+    if (@(Get-AppProcs).Count -eq 0) {{ break }}
+    Start-Sleep -Seconds 1
+}}
+$stuck = @(Get-AppProcs)
+if ($stuck.Count -gt 0) {{
+    Write-Output ("Force-killing {{0}} lingering process(es) holding the install dir..." -f $stuck.Count)
+    foreach ($p in $stuck) {{ Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }}
+    Start-Sleep -Seconds 3
+}}
+
 Write-Output "Mirroring new build into $dst..."
-robocopy $src $dst /E /R:3 /W:2 /NFL /NDL /NJH /NJS
-Write-Output "robocopy exit code: $LASTEXITCODE"
+robocopy $src $dst /E /R:1 /W:2 /NFL /NDL /NJH /NJS
+$rc = $LASTEXITCODE
+Write-Output "robocopy exit code: $rc"
+if ($rc -ge 8) {{
+    Write-Output "ERROR: file swap FAILED (exit $rc) - install dir may be partially updated."
+}} else {{
+    Write-Output "File swap OK."
+}}
 Write-Output "Starting $svc..."
 sc.exe start $svc | Out-Null
 Start-Sleep -Seconds 2

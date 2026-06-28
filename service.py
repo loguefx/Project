@@ -102,6 +102,8 @@ def _build_service_class():
             self.httpd = None
 
         def SvcStop(self):
+            import threading
+            import time
             self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
             try:
                 if self.httpd is not None:
@@ -109,6 +111,16 @@ def _build_service_class():
             except Exception:  # pylint: disable=broad-except
                 pass
             win32event.SetEvent(self.hWaitStop)
+            # A frozen onedir build keeps its .exe and _internal\*.dll locked for
+            # the entire life of the process. Background scan/watcher threads can
+            # keep this process alive after the server stops — which blocks the
+            # in-app updater from swapping the files (robocopy ERROR 32). Guarantee
+            # the process fully exits shortly after a stop is requested so its file
+            # handles are released and the swap can proceed.
+            def _force_exit():
+                time.sleep(6)
+                os._exit(0)
+            threading.Thread(target=_force_exit, daemon=True).start()
 
         def SvcDoRun(self):
             _configure_file_logging("service.log")
