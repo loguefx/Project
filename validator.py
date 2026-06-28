@@ -147,6 +147,17 @@ _PTS_PROBE_TIMEOUT_SEC: int = 300
 _SCAN_WORKERS_DEEP: int = 8
 _SCAN_WORKERS_SHALLOW: int = 16
 
+# A full-library scan usually spans several NAS servers. Files are enumerated
+# library-by-library, so without re-ordering, the first N items in the work
+# queue all live on the SAME server — pinning N workers to one box while every
+# other server sits idle. We round-robin the queue across servers (see
+# _interleave_by_server) and widen the pool so several servers are read at once,
+# multiplying effective read bandwidth. Per-server concurrency stays modest so
+# no single box is saturated; the total is capped for sanity. Override the
+# auto-sizing with the STVD_SCAN_WORKERS environment variable if needed.
+_SCAN_WORKERS_PER_SERVER: int = 2
+_SCAN_WORKERS_MAX: int = 24
+
 # ── Incremental validation cache ──────────────────────────────────────────
 # A full-library deep scan is bottlenecked by NAS bandwidth (each multi-GB file
 # must be largely read over the network), so a first pass can take a long time.
@@ -1114,6 +1125,54 @@ def validate_downloaded_grouped(
 # Full-library DRY-RUN scan — reports broken files for user confirmation
 # ---------------------------------------------------------------------------
 
+def _server_root(path_str: str) -> str:
+    """Best-effort 'which physical server' key for a path so the scanner can
+    spread concurrent reads across different NAS boxes. UNC ``\\\\host\\share``
+    collapses to ``\\\\host``; a local path collapses to its drive letter."""
+    s = str(path_str).replace("/", "\\")
+    if s.startswith("\\\\"):
+        parts = [p for p in s.split("\\") if p]
+        if parts:
+            return "\\\\" + parts[0].lower()
+    drive = os.path.splitdrive(s)[0]
+    return (drive or s).lower()
+
+
+def _interleave_by_server(items: list) -> tuple:
+    """Round-robin a list of ``(video, show, lib_path, size, mtime)`` tuples
+    across their server roots so concurrent workers hit many servers at once
+    instead of hammering one while the rest idle.
+
+    Returns ``(reordered_items, distinct_server_count)``. This is an ORDER-ONLY
+    transform — every file is still present exactly once and is validated by the
+    identical check, so scan results are unchanged; only the dispatch order (and
+    therefore how well the NAS bandwidth is used) differs.
+    """
+    buckets: dict = {}
+    order: list = []
+    for it in items:
+        key = _server_root(it[2])  # lib_path
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(it)
+    if len(order) <= 1:
+        return items, len(order)
+    result: list = []
+    i = 0
+    while True:
+        added = False
+        for key in order:
+            b = buckets[key]
+            if i < len(b):
+                result.append(b[i])
+                added = True
+        if not added:
+            break
+        i += 1
+    return result, len(order)
+
+
 def find_broken_in_library(
     library_paths: list[str],
     state: dict,
@@ -1218,9 +1277,11 @@ def find_broken_in_library(
     # call. Only the *waiting* is overlapped. All grouping / counting below runs
     # on THIS single thread as each result returns, so the final report is
     # identical regardless of the order workers happen to finish in.
-    if workers <= 0:
-        workers = _SCAN_WORKERS_DEEP if deep else _SCAN_WORKERS_SHALLOW
-    workers = max(1, min(workers, total or 1))
+    # Auto worker-sizing is deferred until after the cache pass + server
+    # interleave below, since it scales with how many distinct servers the
+    # remaining (uncached) work actually spans. A caller-supplied workers>0 is
+    # honoured as-is.
+    requested_workers = workers
 
     def _bookkeep(video_file: Path, show_dir: Path, lib_path: str,
                   valid: bool, reason: str) -> None:
@@ -1330,6 +1391,29 @@ def find_broken_in_library(
     if use_cache and cached_hits:
         logger.info("[Validator] Incremental cache: %d/%d file(s) unchanged — "
                     "re-checking %d.", cached_hits, total, len(to_validate))
+
+    # Spread concurrent reads across DIFFERENT servers (order-only change).
+    to_validate, distinct_servers = _interleave_by_server(to_validate)
+
+    # Size the worker pool now that we know how many servers the work spans.
+    if requested_workers and requested_workers > 0:
+        workers = requested_workers
+    else:
+        env = os.environ.get("STVD_SCAN_WORKERS", "")
+        if env.isdigit() and int(env) > 0:
+            workers = int(env)
+        elif deep:
+            workers = max(_SCAN_WORKERS_DEEP,
+                          min(_SCAN_WORKERS_MAX,
+                              max(1, distinct_servers) * _SCAN_WORKERS_PER_SERVER))
+        else:
+            workers = _SCAN_WORKERS_SHALLOW
+    workers = max(1, min(workers, len(to_validate) or 1))
+    if to_validate:
+        logger.info(
+            "[Validator] %s scan: %d file(s) across %d server(s) using %d workers.",
+            "Deep" if deep else "Header", len(to_validate), distinct_servers, workers,
+        )
 
     # Validate the remaining (new/changed) files concurrently.
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
