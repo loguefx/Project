@@ -206,8 +206,14 @@ def _fetch_movie_poster_by_name(title_year: str) -> str:
     return ""
 
 
-def get_qbit_torrents() -> list[dict]:
-    """Fetch active torrent list from qBittorrent."""
+def _fetch_qbit_torrents() -> tuple[list[dict], bool]:
+    """Fetch the torrent list from qBittorrent.
+
+    Returns (torrents, online).  `online` is True when the Web API responded
+    successfully — even with an empty list (qBit up, nothing downloading).  It
+    is only False when qBit is genuinely unreachable or auth failed, so an idle
+    client is never mislabelled "offline".
+    """
     try:
         import requests as req
         cfg = load_config().get("qbittorrent", {})
@@ -226,10 +232,15 @@ def get_qbit_torrents() -> list[dict]:
 
         resp = session.get(f"{base}/api/v2/torrents/info", timeout=5)
         resp.raise_for_status()
-        return resp.json()
+        return resp.json(), True
     except Exception as exc:
         log.debug("qBittorrent unavailable: %s", exc)
-        return []
+        return [], False
+
+
+def get_qbit_torrents() -> list[dict]:
+    """Fetch active torrent list from qBittorrent."""
+    return _fetch_qbit_torrents()[0]
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +468,142 @@ def api_group_reliability():
     })
 
 
+# ---------------------------------------------------------------------------
+# Cached NAS inventory — used by the Progress tab to confirm a tracked download
+# actually still exists on disk (so we never show "Done" for a missing file) and
+# to surface the show/movie's UNC location.  Plain directory listing (no ffprobe)
+# so it's cheap; cached and refreshed in the background.
+# ---------------------------------------------------------------------------
+
+_disk_inv_cache: dict = {"ts": 0.0, "data": None, "updated_at": None, "building": False}
+_disk_inv_lock = threading.Lock()
+_DISK_INV_TTL = 600  # 10 min
+
+
+def _norm_key_show(name: str) -> str:
+    """Aggressive, punctuation-insensitive show/title key for matching a state
+    key against a NAS folder name (drops a trailing year and all non-alnum)."""
+    s = re.sub(r"\s*\(\d{4}\)\s*$", "", name or "")
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _build_disk_inventory() -> dict:
+    """Walk every enabled library once and build a fast lookup of what's on disk:
+      tv:        norm_show -> {season:int -> set(episode:int)}
+      tv_paths:  norm_show -> UNC show-folder path
+      movies:    "normtitle|year" -> True
+      movie_paths: "normtitle|year" -> UNC movie-folder path
+    """
+    from scanner import scan_tv_library, scan_movie_library
+    cfg = load_config()
+    tv: dict = {}
+    tv_paths: dict = {}
+    movies: dict = {}
+    movie_paths: dict = {}
+    for lib in cfg.get("libraries", []):
+        if not lib.get("enabled", True):
+            continue
+        ltype = (lib.get("type") or "").lower()
+        lpath = lib.get("path", "")
+        if not lpath:
+            continue
+        try:
+            if ltype in ("tv", "animation"):
+                inv = scan_tv_library(lpath)
+                for folder, seasons in inv.items():
+                    norm = _norm_key_show(folder)
+                    if not norm:
+                        continue
+                    dst = tv.setdefault(norm, {})
+                    for s, eps in (seasons or {}).items():
+                        dst.setdefault(int(s), set()).update(int(e) for e in eps)
+                    tv_paths.setdefault(norm, str(Path(lpath) / folder))
+            elif ltype == "movie":
+                minv = scan_movie_library(lpath)
+                for _disp, meta in minv.items():
+                    if not isinstance(meta, dict):
+                        continue
+                    title = meta.get("title", "")
+                    year = meta.get("year", "")
+                    mkey = f"{_norm_key_show(title)}|{year}"
+                    movies[mkey] = bool(meta.get("has_file", True))
+                    movie_paths.setdefault(mkey, meta.get("path", ""))
+        except Exception as exc:  # pylint: disable=broad-except
+            log.warning("[progress] inventory scan failed for %s: %s", lpath, exc)
+    return {"tv": tv, "tv_paths": tv_paths, "movies": movies, "movie_paths": movie_paths}
+
+
+def _refresh_disk_inventory() -> None:
+    try:
+        data = _build_disk_inventory()
+        _disk_inv_cache.update({
+            "data": data,
+            "ts": time.time(),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
+    except Exception as exc:  # pylint: disable=broad-except
+        log.warning("[progress] inventory refresh failed: %s", exc)
+    finally:
+        _disk_inv_cache["building"] = False
+
+
+def _get_disk_inventory() -> tuple[Optional[dict], Optional[str]]:
+    """Return (inventory, updated_at). Serves cached data immediately and kicks
+    off a background rebuild when stale, so the endpoint never blocks on NAS I/O.
+    Returns (None, None) until the first build completes."""
+    now = time.time()
+    data = _disk_inv_cache.get("data")
+    fresh = data is not None and (now - _disk_inv_cache.get("ts", 0)) < _DISK_INV_TTL
+    if not fresh and not _disk_inv_cache.get("building"):
+        with _disk_inv_lock:
+            if not _disk_inv_cache.get("building"):
+                _disk_inv_cache["building"] = True
+                threading.Thread(target=_refresh_disk_inventory, daemon=True).start()
+    return data, _disk_inv_cache.get("updated_at")
+
+
+def _disk_status_for(info: dict, inv: dict) -> tuple[Optional[bool], str]:
+    """Given a parsed state-key `info` and the disk inventory, return
+    (exists_on_disk, unc_path). exists is None when we can't determine it."""
+    if not inv:
+        return None, ""
+    kind = info.get("kind")
+    if kind == "tv":
+        norm = _norm_key_show(info.get("show") or "")
+        seasons = inv.get("tv", {}).get(norm)
+        unc = inv.get("tv_paths", {}).get(norm, "")
+        # Show folder not found at all -> uncertain (could be a name mismatch or a
+        # transient scan gap). Stay None so we never mass-flag a whole show as
+        # "missing" on a NAS/VPN hiccup. We only confidently report missing when
+        # the show IS present but this specific episode/season isn't.
+        if seasons is None:
+            return None, unc
+        season = info.get("season")
+        episode = info.get("episode")
+        if season is not None and episode is not None:
+            return (episode in seasons.get(season, set())), unc
+        if season is not None:
+            return (bool(seasons.get(season))), unc
+        return (bool(seasons)), unc
+    if kind == "movie":
+        norm = _norm_key_show(info.get("show") or "")
+        # season field carries nothing for movies; year is in the label.
+        year = ""
+        m = re.search(r"\((\d{4})\)", info.get("label") or "")
+        if m:
+            year = m.group(1)
+        mkey = f"{norm}|{year}"
+        if mkey in inv.get("movies", {}):
+            return inv["movies"][mkey], inv.get("movie_paths", {}).get(mkey, "")
+        # Fall back to title-only match (year may differ between source and disk)
+        for k, present in inv.get("movies", {}).items():
+            if k.split("|", 1)[0] == norm:
+                return present, inv.get("movie_paths", {}).get(k, "")
+        # Not found -> uncertain (don't mass-flag on a scan gap).
+        return None, ""
+    return None, ""
+
+
 def _parse_state_key(key: str) -> dict:
     """Turn a state key (tv::Show::S03E05 / tv::Show::S03::pack / movie::T::Year)
     into a friendly label + structured fields for the progress view."""
@@ -522,15 +669,19 @@ def api_download_progress():
             else:
                 extra_unresolved.append(item.strip())
 
-    # Best-effort live qBit progress, matched by release name.
+    # Best-effort live qBit progress, matched by release name. `qbit_online`
+    # reflects whether the Web API actually responded — an idle client with zero
+    # torrents is online, not offline.
     qbit_by_name: dict = {}
-    try:
-        for t in get_qbit_torrents():
-            nm = (t.get("name") or "").strip()
-            if nm:
-                qbit_by_name[nm] = t
-    except Exception:  # pylint: disable=broad-except
-        qbit_by_name = {}
+    qbit_torrents, qbit_online = _fetch_qbit_torrents()
+    for t in qbit_torrents:
+        nm = (t.get("name") or "").strip()
+        if nm:
+            qbit_by_name[nm] = t
+
+    # Disk inventory (cached/background-refreshed) so "Done" never lies about a
+    # file that no longer exists on the NAS, and we can show its UNC path.
+    inv, inv_updated_at = _get_disk_inventory()
 
     def _match_qbit(release: str):
         if not release:
@@ -584,6 +735,13 @@ def api_download_progress():
             # either finished and awaiting validation, or finished long ago unstamped.
             status = "pending"
 
+        # Cross-check against the NAS: if we think it's on disk (validated/done)
+        # but the file isn't actually there, it was removed — surface as "missing"
+        # rather than a false "Done". `exists` is None when inventory isn't ready.
+        exists, unc_path = _disk_status_for(info, inv) if inv else (None, "")
+        if exists is False and status in ("validated", "pending"):
+            status = "missing"
+
         rq = retry_queue.get(key, {}) or {}
         episodes.append({
             "key": key,
@@ -599,6 +757,8 @@ def api_download_progress():
             "failed_attempts": attempts,
             "search_attempts": rq.get("attempts", 0),
             "qbit": qb,
+            "path": unc_path,
+            "on_disk": exists,
         })
 
     # Labels we couldn't map back to a state key — still surface them as exhausted.
@@ -606,11 +766,12 @@ def api_download_progress():
         episodes.append({
             "key": lbl, "label": lbl, "show": lbl, "season": None, "episode": None,
             "kind": "tv", "status": "exhausted", "release": "", "queued_at": "",
-            "validated_at": "", "failed_attempts": 0, "search_attempts": 0, "qbit": None,
+            "validated_at": "", "failed_attempts": 0, "search_attempts": 0,
+            "qbit": None, "path": "", "on_disk": None,
         })
 
     summary = {"validated": 0, "pending": 0, "downloading": 0, "retrying": 0,
-               "search_failed": 0, "exhausted": 0}
+               "search_failed": 0, "exhausted": 0, "missing": 0}
     for e in episodes:
         summary[e["status"]] = summary.get(e["status"], 0) + 1
     # True total of releases ever discarded as corrupt (independent of current keys).
@@ -629,17 +790,21 @@ def api_download_progress():
         elif st in ("downloading", "retrying"):
             items.sort(key=lambda e: (e["qbit"] or {}).get("progress", 0), reverse=True)
 
+    disk_verified = inv is not None
+
     want = (request.args.get("status") or "").strip()
     if want and want in buckets:
         items = buckets[want]
         return jsonify({
             "summary": summary, "total_episodes": len(episodes),
             "shown": len(items), "episodes": items, "status_filter": want,
-            "qbit_online": bool(qbit_by_name), "last_run": state.get("last_run"),
+            "qbit_online": qbit_online, "last_run": state.get("last_run"),
+            "disk_verified": disk_verified, "disk_updated_at": inv_updated_at,
         })
 
     caps = {"search_failed": 150, "pending": 200, "validated": 100}
-    order = ["exhausted", "retrying", "downloading", "search_failed", "pending", "validated"]
+    order = ["missing", "exhausted", "retrying", "downloading",
+             "search_failed", "pending", "validated"]
     trimmed = []
     for st in order:
         items = buckets.get(st, [])
@@ -651,8 +816,10 @@ def api_download_progress():
         "total_episodes": len(episodes),
         "shown": len(trimmed),
         "episodes": trimmed,
-        "qbit_online": bool(qbit_by_name),
+        "qbit_online": qbit_online,
         "last_run": state.get("last_run"),
+        "disk_verified": disk_verified,
+        "disk_updated_at": inv_updated_at,
     })
 
 

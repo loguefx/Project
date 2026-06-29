@@ -1758,6 +1758,7 @@
       .prog-row { display:flex; align-items:center; gap:12px; padding:9px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px; }
       .prog-row .pr-label { font-weight:600; font-size:13px; }
       .prog-row .pr-sub { font-size:11px; color:var(--muted); margin-top:2px; word-break:break-all; }
+      .prog-row .pr-path { font-size:10px; color:var(--muted); opacity:.7; margin-top:2px; font-family:ui-monospace,Menlo,Consolas,monospace; word-break:break-all; }
       .st-badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; padding:3px 8px; border-radius:999px; white-space:nowrap; flex-shrink:0; }
     </style>
     <div class="tab-panel" id="tab-progress">
@@ -3711,9 +3712,10 @@ const PROG_META = {
   downloading:   { label: 'Downloading', color: '#27c5c5' },
   retrying:      { label: 'Retrying',    color: '#f5a623' },
   search_failed: { label: 'No release',  color: '#8a8f98' },
+  missing:       { label: 'Missing',     color: '#ff7b3d' },
   exhausted:     { label: 'Gave up',     color: '#ff5656' },
 };
-const PROG_ORDER = ['validated','pending','downloading','retrying','search_failed','exhausted'];
+const PROG_ORDER = ['validated','pending','downloading','retrying','search_failed','missing','exhausted'];
 
 function _startProgressPoll() {
   loadProgress();
@@ -3734,8 +3736,14 @@ async function loadProgress() {
     const note = document.getElementById('progress-corrupt-note');
     if (note) {
       const cr = (d.summary || {}).corrupt_removed || 0;
-      note.innerHTML = `${cr.toLocaleString()} corrupt release(s) discarded and re-searched across all episodes`
-        + (d.qbit_online ? '' : ' · <span style="color:#ff9090">qBittorrent offline — live download state unavailable</span>');
+      let html = `${cr.toLocaleString()} corrupt release(s) discarded and re-searched across all episodes`;
+      if (!d.qbit_online) html += ' · <span style="color:#ff9090">qBittorrent offline — live download state unavailable</span>';
+      if (!d.disk_verified) {
+        html += ' · <span style="color:#f5a623">verifying files on the NAS… counts update shortly</span>';
+      } else if (d.disk_updated_at) {
+        html += ` · <span style="opacity:.6">NAS checked ${escapeHtml(String(d.disk_updated_at).replace('T',' '))}</span>`;
+      }
+      note.innerHTML = html;
     }
     const upd = document.getElementById('progress-updated');
     if (upd) upd.textContent = 'Updated ' + new Date().toLocaleTimeString();
@@ -3801,15 +3809,21 @@ function renderProgressList(d) {
       right = `<div style="min-width:120px;text-align:right;font-size:11px;color:var(--muted)">${e.failed_attempts} bad release(s)</div>`;
     } else if (e.status === 'search_failed') {
       right = `<div style="min-width:120px;text-align:right;font-size:11px;color:var(--muted)">${e.search_attempts || 0} search tries</div>`;
+    } else if (e.status === 'missing') {
+      right = `<div style="min-width:120px;text-align:right;font-size:11px;color:#ff7b3d">not on NAS</div>`;
     } else if (e.status === 'validated' && e.validated_at) {
       right = `<div style="min-width:120px;text-align:right;font-size:11px;color:var(--muted)">${escapeHtml(e.validated_at.replace('T', ' '))}</div>`;
     }
     const sub = e.release ? `<div class="pr-sub">${escapeHtml(e.release)}</div>` : '';
+    const path = e.path
+      ? `<div class="pr-path" title="${escapeHtml(e.path)}">${escapeHtml(e.path)}</div>`
+      : '';
     return `<div class="prog-row">
       ${badge}
       <div style="flex:1;min-width:0">
         <div class="pr-label">${escapeHtml(e.label)}</div>
         ${sub}
+        ${path}
       </div>
       ${right}
     </div>`;
