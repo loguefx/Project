@@ -354,25 +354,30 @@ class QBitClient:
     def network_health(self) -> dict:
         """Detect whether qBittorrent can actually reach the BitTorrent network.
 
-        Returns {'up', 'known', 'status', 'dht_nodes'}. ``up`` is False in the
-        classic VPN-down / interface-bound-but-tunnel-offline state: qBit reports
-        'disconnected' (or 'firewalled' with **zero DHT nodes**), so every torrent
-        shows 0 seeds even when the releases are perfectly healthy.
+        Returns {'up', 'known', 'status', 'dht_nodes'}. ``known`` is False when
+        qBit itself is unreachable, so callers can avoid acting on an uncertain
+        reading.
 
-        ``dht_nodes == 0`` is the reliable tell — when the network is reachable,
-        qBit bootstraps hundreds of DHT nodes within seconds; a sustained 0 means
-        outgoing BitTorrent traffic is blocked (expired VPN, dropped tunnel, etc.).
-        ``known`` is False when qBit itself is unreachable, so callers can avoid
-        acting on an uncertain reading.
+        We key off qBit's ``connection_status`` and treat only ``disconnected``
+        (or qBit being unreachable) as down:
+
+        * ``connected``  — has inbound peer connections → healthy.
+        * ``firewalled`` — fully working, just no inbound port (the NORMAL state
+          behind a VPN without port-forwarding, e.g. Mullvad). Outbound peers
+          and downloads work fine, so this is UP.
+        * ``disconnected`` — genuinely not connected to the network (the real
+          VPN-down / dropped-tunnel case) → down.
+
+        We deliberately do NOT use ``dht_nodes == 0`` as a down signal: most
+        private-tracker setups disable DHT/PEX/LSD, so 0 nodes is expected and
+        says nothing about connectivity. (It's still returned for diagnostics.)
         """
         ti = self.transfer_info()
         if not ti:
             return {"up": False, "known": False, "status": "unreachable", "dht_nodes": 0}
         status = ti.get("connection_status", "")
         dht = int(ti.get("dht_nodes", 0) or 0)
-        # 'connected' = qBit has live peer connections → healthy regardless of DHT.
-        # Otherwise we require DHT nodes; 0 DHT means it can't reach the network.
-        up = (status == "connected") or (dht > 0)
+        up = status != "disconnected"
         return {"up": up, "known": True, "status": status, "dht_nodes": dht}
 
     def ensure_queue_settings(self) -> int:
