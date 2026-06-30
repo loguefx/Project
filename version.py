@@ -4,4 +4,4 @@
 in-app updater compares this value against the latest GitHub Release tag.
 """
 
-__version__ = "1.0.7"
+__version__ = "1.0.8"
